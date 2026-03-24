@@ -1,6 +1,6 @@
 ---
 title: "Bulk RNA-Seq DGE Pipeline"
-author: "Christian Siangco, mod. Pedro Lopez"
+author: "Pedro Lopez"
 date: "260302"
 output: html_document
 editor_options: 
