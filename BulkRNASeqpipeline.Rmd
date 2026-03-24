@@ -1,0 +1,2145 @@
+---
+title: "Bulk RNA-Seq DGE Pipeline"
+author: "Christian Siangco, mod. Pedro Lopez"
+date: "260302"
+output: html_document
+editor_options: 
+  chunk_output_type: inline
+---
+
+## Packages to install and use 
+```{r echo=T, message=F, warning=F} 
+if (!require("BiocManager", quietly = TRUE))
+install.packages("BiocManager")
+pkg <- c('tidyverse', "gplots", "RColorBrewer", "pheatmap", "ggplot2",
+  "calibrate", "ashr", 'apeglm', "DESeq2", "dplyr", "TCGAbiolinks", "AnnotationDbi",
+  "ReportingTools", "clusterProfiler", "enrichplot", "pathview", "gage", "gageData", "Select", "limma", "org.Hs.eg.db", "Rsubread", "stringr", "openxlsx", "IOBR", "mygene")
+
+BiocManager::install(pkg, update = T, ask = FALSE, force = TRUE)
+
+# loading
+library(TCGAbiolinks)
+library(dplyr)
+library(DESeq2)
+library(apeglm)
+library(ashr)
+library(calibrate)
+library(ggplot2)
+library(pheatmap)
+library(RColorBrewer)
+library(gplots)
+library(tidyverse)
+library(readxl)
+library(AnnotationDbi)
+library(ReportingTools)
+library(GO.db)
+library(GOstats)
+library(pathview)
+library(gage)
+library(gageData)
+library(Select)
+library(limma)
+library(org.Hs.eg.db)
+library(Rsubread)
+library(stringr)
+library(openxlsx)
+library(IOBR)
+```
+#Input relevant info
+```{r}
+Initials <- readline(prompt = "Enter your initials: ")
+
+cell_line <- readline(prompt = "Enter cell line: ")
+
+perturbation <- readline(prompt = "Enter perturbation of cell line: ")
+
+Seq_date <- readline(prompt = "Enter date of RNAseq: ")
+
+Replicates <- readline(prompt = "Enter number of biological replicates: ")
+
+dir_name <- paste0(Initials, "_",cell_line, "_", perturbation)
+
+BAM_files <- rstudioapi::selectDirectory(caption = "select folder with all BAM files", path = "/media/bree")
+
+gtf.path <- rstudioapi::selectFile(caption = "select .gtf file used for alignment", path = "/media/bree")
+
+#gtf.path <- "/media/bree/Expansion/gencode.v24.primary_assembly.annotation.gtf"
+```
+
+#create file directories
+```{r}
+outputdir <- rstudioapi::selectDirectory(caption = "Select folder for path generation")
+
+outputdir_base <- normalizePath(file.path(outputdir, paste0("RNASeqAnalysis_",dir_name)), mustWork = FALSE)
+dir.create(outputdir_base, recursive = TRUE, showWarnings = FALSE)
+
+outputdir_SEQ <- normalizePath(file.path(outputdir_base, paste0("DESeq2_",dir_name)), mustWork = FALSE)
+dir.create(outputdir_SEQ, recursive = TRUE, showWarnings = FALSE)
+
+outputdir_SEQ_allsashimi <- normalizePath(file.path(outputdir_SEQ, "allsashimi"), mustWork = FALSE)
+dir.create(outputdir_SEQ_allsashimi, recursive = TRUE, showWarnings = FALSE)
+
+outputdir_SEQ_GO <- normalizePath(file.path(outputdir_SEQ, "GO_plots"), mustWork = FALSE)
+dir.create(outputdir_SEQ_GO, recursive = TRUE, showWarnings = FALSE)
+
+outputdir_SEQ_GSEA <- normalizePath(file.path(outputdir_SEQ, "GSEA_plots"), mustWork = FALSE)
+dir.create(outputdir_SEQ_GSEA, recursive = TRUE, showWarnings = FALSE)
+
+outputdir_MATS <-normalizePath(file.path(outputdir_base, paste0("rMATS_", dir_name)), mustWork = FALSE)
+dir.create(outputdir_MATS, recursive = TRUE, showWarnings = FALSE)
+
+outputdir_MATSfiles <- normalizePath(file.path(outputdir_MATS, "rMATS_output"), mustWork = FALSE)
+dir.create(outputdir_MATSfiles, recursive = TRUE, showWarnings = FALSE)
+
+outputdir_MATS_allsashimi <- normalizePath(file.path(outputdir_MATS, "allsashimi"), mustWork = FALSE)
+dir.create(outputdir_MATS_allsashimi, recursive = TRUE, showWarnings = FALSE)
+
+outputdir_MATS_GO <- normalizePath(file.path(outputdir_MATS, "GO_plots"), mustWork = FALSE)
+dir.create(outputdir_MATS_GO, recursive = TRUE, showWarnings = FALSE)
+
+outputdir_MATS_GSEA <- normalizePath(file.path(outputdir_MATS, "GSEA_plots"), mustWork = FALSE)
+dir.create(outputdir_MATS_GSEA, recursive = TRUE, showWarnings = FALSE)
+
+```
+
+## generate counts for DESeq2
+```{r}
+bam_files <- list.files(BAM_files , full.names = TRUE)
+bam_files <- gsub("\\\\", "/", bam_files)
+
+#counting call, feed in bam files and annotations, mark as paired end
+
+counts_mat_new <- featureCounts(files = c(unlist(bam_files[which(grepl(".bam$", bam_files)&grepl(cell_line, bam_files))])),
+                                isGTFAnnotationFile = TRUE,
+                                annot.ext = gtf.path, 
+                                isPairedEnd = TRUE , strandSpecific = 0)
+
+gg.bams <- c(unlist(bam_files[which(grepl("\\.bam$", bam_files)&grepl(cell_line, bam_files))]))
+
+#make .txt files for Ctrl and KD bam paths
+ctrl_bams <- c(gg.bams[which(grepl("Ctrl", gg.bams))]) %>% 
+  paste(collapse = ",") %>%
+  write(file.path(normalizePath(outputdir_MATS), "ctrl_bams.txt"))
+ctrl_bams.path <- file.path(normalizePath(outputdir_MATS), "ctrl_bams.txt")
+
+KD_bams <- c(gg.bams[which(!grepl("Ctrl", gg.bams))])%>%
+  paste(collapse = ",") %>%
+  write(file.path(normalizePath(outputdir_MATS), "KD_bams.txt"))
+countdata <- counts_mat_new$counts %>%as.data.frame()
+KD_bams.path <- file.path(normalizePath(outputdir_MATS), "KD_bams.txt")
+
+#fix colnames
+
+colname_old <- colnames(countdata)
+
+colnames(countdata) <- sapply(colname_old, function(x){
+  new_name <- str_split_1(x, "_CKD")[[1]]
+  paste(new_name, "_", sep = "")
+})
+
+genes_vec <- rownames(countdata)
+countdata <- mutate(countdata, Gene = genes_vec, .before = colnames(countdata)[1])
+
+#copy and paste your spreadsheet into read_excel(___). 
+
+
+
+fileName = paste0(cell_line, "_", perturbation, "_DESeq2.xlsx")
+
+outfile = paste(outputdir_SEQ, fileName, sep = "/")
+
+#README sheet at the start of excel
+Sheet <- c("Overall description", "", "", "counts matrix", "", "", "DESeq2 output", "", "",
+                       "FDR_0.05", "", "", "|log2FoldChange|_1","","","","","","")
+t_ <- c("-->", "", "", "-->", "", "", "-->", "", "",
+                       "-->", "", "", "-->","","", "Initials","Cell line", "Perturbation", "Date of processing")
+Sheet_description <- c("List all output data associated with DESeq2 pipeline", "", "", "raw read counts used for DESeq2 run", "", "", "unfiltered DESeq2 output. Includes log2FoldChange; log2foldchange standard error (lfcSE); p-value and p adj value (padj or FDR); ensembl ID; gene name (SYMBOL); TPM; Description of gene", "", "", "filtered for padjusted values less than 0.05", "", "", "filtered FDR_0.05 filtered data set further to include only genes with an absolute log2FoldChange greater than 1", "", "", Initials, cell_line, perturbation, date())
+README_df <- data.frame(Sheet = Sheet, t_ = t_, Sheet_description = Sheet_description )
+
+wb <- createWorkbook()
+addWorksheet(wb, "README")
+writeData(wb, "README", README_df)
+addWorksheet(wb, "counts matrix")
+writeData(wb, "counts matrix", countdata)
+saveWorkbook(wb, file = outfile, overwrite = TRUE)
+```
+
+## Prepare data for Analysis with DESeq2
+```{r}
+## Upload raw read count matrix as a table
+counts_mat <- read_excel(outfile, sheet = "counts matrix")
+
+## Convert the table to a dataframe
+
+counts_mat<-as.data.frame(counts_mat)
+
+## Assign the gene symbol/ID to row names, remove the gene symbol/ID column, 
+# asummes that there is a column called Gene
+row.names(counts_mat) <- counts_mat$Gene
+counts_mat <- counts_mat[ ,-which(colnames(counts_mat) %in% 'Gene')]
+
+
+## Assign condition and other variables (Ensure the order of the factor matches
+## the position/column of the sample within the raw read count matrix)
+
+Group <- factor(c(rep("Ctrl",Replicates), rep("KD",Replicates)))
+# Batch <- factor(c("Batch1","Batch2","Batch1","Batch2")) <- removed due to RNASeq protocol mod to remove                                                               batch effect 260310
+
+
+## Create the colData variable (table of sample information) for DESeq2 
+## based on the conditions 
+coldata<- data.frame(row.names=colnames(counts_mat),Group)
+```
+
+## Differential Gene Expression Analysis with DESeq2
+```{r}
+## Generate a DESEQDataSet File from the matrix, column data, and group variables
+
+dds <- DESeqDataSetFromMatrix(countData = counts_mat,
+                              colData = coldata,
+                              design = ~Group)
+
+## Run the DESeq function
+
+dds <- DESeq(dds)
+
+## Generate Dispersion Plot for QC purposes
+
+Disp_path <- file.path(normalizePath(outputdir_SEQ), "qc-dispersions.pdf")
+pdf(Disp_path, width = 7, height=5)
+plotDispEsts(dds, main="Dispersion plot")
+dev.off()
+
+## Perform the differential gene expression analysis and acquire the results 
+## between the two conditions (use ashr method to generate log2FoldChange 
+## values)
+
+res <- results(dds, alpha = 0.05)
+res <- lfcShrink(dds, contrast = c("Group","KD","Ctrl"),
+type = "ashr")
+
+
+## Generate a MA plot (scatterplot of the log fold change and mean average of
+## normalized counts)
+
+MA_path <- file.path(normalizePath(outputdir_SEQ), "MAplot.png")
+png(MA_path, 1000, 1000, pointsize=20)
+plotMA(res,ylim=c(-5,5))
+dev.off()
+
+
+## Generate volcano plot
+
+"Gene" <- names(res)[1]
+volcanoplot <- function (res, lfcthresh=1, sigthresh=0.05, main="Volcano Plot",
+legendpos="bottomright", labelsig=TRUE, textcx=1, ...)
+{
+with(res, plot(log2FoldChange, -log10(pvalue), pch=20, main=main, ...))
+with(subset(res, padj<sigthresh ), points(log2FoldChange, -log10(pvalue),
+pch=20, col="red", ...))
+with(subset(res, abs(log2FoldChange)>lfcthresh), points(log2FoldChange,
+-log10(pvalue), pch=20, col="orange", ...))
+with(subset(res, padj<sigthresh & abs(log2FoldChange)>lfcthresh),
+points(log2FoldChange, -log10(pvalue), pch=20, col="green", ...))
+if (labelsig) {
+require(calibrate)
+4
+with(subset(res, padj<sigthresh & abs(log2FoldChange)>lfcthresh),
+textxy(log2FoldChange, -log10(pvalue), labs=NULL, cex=textcx, ...))
+}
+legend(legendpos, xjust=1, yjust=1, legend=c(paste("FDR<",sigthresh,sep=""),
+paste("|LogFC|>",lfcthresh,sep=""), "both"),
+pch=20, col=c("red","orange","green"))
+}
+vol_path <- file.path(normalizePath(outputdir_SEQ), "volcano.png")
+png(vol_path, 1200, 1000, pointsize=20)
+volcano <- volcanoplot(res, lfcthresh=1, sigthresh=0.05, textcx=.8)
+dev.off()
+
+## Perform a variance stabilizing transformation on the DESeq data and create matrix
+## with vst transformed count data
+
+vstdata <- vst(dds)
+vstMatrix <- assay(vstdata)
+
+##Generate Sample-Sample Distance Heatmap with vst() function
+
+sampleDists <- as.dist(1-cor(vstMatrix))
+sampleDistMatrix <- as.matrix(sampleDists)
+annoCol <- as.data.frame(colData(dds))
+annoCol=annoCol[c(1)]
+
+heat_path <- file.path(normalizePath(outputdir_SEQ), "heatmap.png")
+heat_map <- pheatmap(sampleDistMatrix,
+clustering_distance_rows=sampleDists,
+clustering_distance_cols=sampleDists ,annotation_col = annoCol,
+filename = heat_path,
+width = 8,
+height = 10)
+heat_map
+
+```
+
+## OPTIONAL Alternative Sample Distance Plot
+```{r}
+# Transpose count matrix and calculate distances using dist()
+sampleDists <- assay(vstdata) %>% t() %>% dist()
+
+# Convert distance dataframe to matrix
+sampleDistMatrix <- as.matrix(sampleDists)
+
+# Choose continuous palette from RColorBrewer
+colors <- colorRampPalette(rev(brewer.pal(9, "Blues")))(255)
+
+# Plot sample distance heatmap with ComplexHeatmap
+altHeat_path <- file.path(normalizePath(outputdir_SEQ), "Alt_sampleDistance_plot.png")
+pheatmap(sampleDistMatrix, cluster_rows = T, cluster_columns = T,
+        col = colors,main= cell_line,
+        filename = altHeat_path)
+```
+
+
+## Generate PCAplot
+```{r}
+library(ggplot2)
+rld = rlog(dds)
+PCA <- plotPCA(rld, intgroup = "Group", ntop = 2000)
+pca_path <- file.path(normalizePath(outputdir_SEQ), "PCA_plot.png")
+ggsave(pca_path, plot = PCA, width = 8, height = 6, dpi = 300)
+PCA
+```
+
+## Generate log2 normalized gene expression scatterplot 
+```{r}
+## generate dataframe of normalized expression values for a gene of interest
+
+SFPQexpression <- plotCounts(dds = dds,gene = "ENSG00000116560.10",intgroup = "Group",returnData = TRUE) #need to utomate gene = step 
+
+##create a new dataframe and convert the normalized counts to log2 normalized 
+##counts for visualization purposes
+
+logSFPQexpression <-SFPQexpression
+logSFPQexpression$count<-log2(logSFPQexpression$count)
+
+##create the plot 
+l2f <- ggplot(logSFPQexpression , aes(x=Group, y=count)) + ylab(paste0("Log2 Normalized ",  cell_line," Expression")) + xlab("Group") +  geom_point(shape=1) + ggtitle(cell_line) + theme(plot.title = element_text(hjust = 0.5))+geom_text(aes(label = rownames(logSFPQexpression)),hjust = -0.2, vjust = 0.5)
+l2f_path <- file.path(normalizePath(outputdir_SEQ), "l2f_norm_gene_expresScatterplot.png")
+ggsave(l2f_path, plot = l2f, width = 8, height = 6, dpi = 300)
+l2f
+```
+
+
+## Generate Heatmap of all Significant DE Genes with p-value <0.05 and
+## L2FC < -1 (Sig. Downregulated Genes in KD)
+```{r}
+sigChanges <- rownames(res)[res$padj < 0.05 & res$log2FoldChange < -1 ]
+sigMat <- vstMatrix[rownames(vstMatrix) %in% sigChanges,]
+sigHDWN <- pheatmap(sigMat, scale="row", show_rownames = FALSE,show_colnames = FALSE,
+col=greenred(75), border_color = NA, annotation_col = annoCol)
+sigHeatDWN_path <- file.path(normalizePath(outputdir_SEQ), "HeatsigGene_down.png")
+ggsave(sigHeatDWN_path, plot = sigHDWN, width = 8, height = 6, dpi = 300)
+sigHDWN
+```
+
+## Generate Heatmap of all Significant DE Genes with p-value <0.05 and
+## L2FC > 1 (Sig. Upregulated Genes in KD)
+```{r}
+sigChanges <- rownames(res)[res$padj < 0.05 & res$log2FoldChange > 1 ]
+sigMat <- vstMatrix[rownames(vstMatrix) %in% sigChanges,]
+sigHUP <- pheatmap(sigMat, scale="row", show_rownames = FALSE,show_colnames = FALSE,
+col=greenred(75), border_color = NA, annotation_col = annoCol)
+sigHeatUP_path <- file.path(normalizePath(outputdir_SEQ), "HeatsigGene_up.png")
+ggsave(sigHeatUP_path, plot = sigHUP, width = 8, height = 6, dpi = 300)
+sigHUP
+```
+#print out list of genes that are siginificantly different from Ctrl to KD
+
+```{r}
+library(AnnotationDbi)
+library(org.Hs.eg.db)
+```
+
+```{r}
+res$ENSEMBL = gsub("\\..*","",row.names(res))
+ 
+
+```
+
+```{r}
+res$gene = mapIds(org.Hs.eg.db,
+                    keys = res$ENSEMBL,
+                    column = "SYMBOL",
+                    keytype = "ENSEMBL",
+                    multiVals = "first")
+
+res$ENTREZ = mapIds(org.Hs.eg.db,
+                    keys = res$ENSEMBL,
+                    column = "ENTREZID",
+                    keytype = "ENSEMBL",
+                    multiVals = "first")
+head(res)
+```
+
+#Generate TPM data frame from counts matrix
+```{r}
+rownames(counts_mat) <- gsub("\\..*", "", rownames(counts_mat))
+with_TPM  <-IOBR::count2tpm(counts_mat, idType = "Ensembl", org = "hsa")
+with_TPM$gene <- rownames(with_TPM)
+
+
+
+res_df <- as.data.frame(res)
+
+library(mygene)
+
+res_df<- res_df[!is.na(res_df$padj), ] #check with Dr. Cheng if na's should be removed
+res_df <- res_df[order(res_df$padj),]
+
+gene_info <- getGenes(geneids = res_df$ENSEMBL, fields = "summary") 
+gene_deduped <- gene_info[which(!duplicated(gene_info$query)),]
+gene_desc <- as.vector(gene_deduped$summary)
+
+
+res_geneList <- res_df$gene
+
+res_df <- cbind(
+  res_df,
+  with_TPM[match(res_df$gene, rownames(with_TPM)),1:6]
+)
+res_df <- res_df %>%
+  mutate(Gene = res_df$gene, .before = 1)
+res_df <- res_df %>% 
+  mutate(gene = res_df$gene)
+res_df <- res_df%>%
+  mutate(Description = gene_desc)
+res_df <- res_df %>%
+  mutate(across(colnames(with_TPM)[1:6], ~ round(.x, 2)))
+
+addWorksheet(wb, "DESeq2 output")
+writeData(wb, "DESeq2 output", res_df)
+saveWorkbook(wb, file = outfile, overwrite = TRUE)
+```
+
+```{r}
+#make sheet with filters for cutoffs of DESEq2 output
+res_df_padj <- res_df %>%
+  filter(padj < 0.05)
+addWorksheet(wb, "FDR_0.05")
+writeData(wb, "FDR_0.05", res_df_padj)
+saveWorkbook(wb, file = outfile, overwrite = TRUE)
+
+res_df_allfilt <- res_df_padj %>%
+  filter(abs(log2FoldChange) >= 1 )
+addWorksheet(wb, "|log2FoldChange| _ 1")
+writeData(wb, "|log2FoldChange| _ 1", res_df_allfilt)
+saveWorkbook(wb, file = outfile, overwrite = TRUE)
+```
+
+##DESeq Gene Ontology Analysis
+```{r}
+library(clusterProfiler)
+library(WebGestaltR)
+```
+
+```{r}
+sigUp <- subset(res_df, padj < 0.05 & log2FoldChange >=1)
+sigUp <- sigUp[-which(is.na(sigUp$ENTREZ)),]
+genes_sig_Up <- sigUp$ENTREZ 
+
+sigDown <- subset(res_df, padj < 0.05 & log2FoldChange <= -1 )
+sigDown <- sigDown[-which(is.na(sigDown$ENTREZ)),]
+genes_sig_down <- sigDown$ENTREZ
+
+sigAll <- res_df[-which(is.na(res_df$ENTREZ)),]
+sigAll <- sigAll$ENTREZ
+
+```
+
+
+```{r}
+universeGenes = res_df$gene
+
+```
+
+```{r}
+#set up WebGestaltR function for BP
+web_call_BP <- function(x, cutoff = 0.05, bkg = sigAll, id = "entrezgene",
+                       path = 'geneontology_Biological_Process_noRedundant'){
+
+  WebGestaltR(
+    enrichMethod = "ORA",
+    organism = "hsapiens",
+    enrichDatabase = path,
+
+    interestGene = x,
+    interestGeneType = id,
+
+    referenceGene = bkg,
+    referenceGeneType = id,
+
+    minNum = 5,
+    maxNum = 500,
+    sigMethod = "fdr",
+    fdrMethod = "BH",
+    fdrThr = cutoff,
+    topThr = 10000,
+
+    saveRawGseaResult = FALSE,
+    isOutput = FALSE
+  )
+}
+
+#WebGestaltR function for MF
+web_call_MF <- function(x, cutoff = 0.05, bkg = sigAll, id = "entrezgene", path = 'geneontology_Molecular_Function_noRedundant'){
+WebGestaltR(
+   enrichMethod = "ORA",
+    organism = "hsapiens",
+    enrichDatabase = path,
+
+    interestGene = x,
+    interestGeneType = id,
+
+    referenceGene = bkg,
+    referenceGeneType = id,
+
+    minNum = 5,
+    maxNum = 500,
+    sigMethod = "fdr",
+    fdrMethod = "BH",
+    fdrThr = cutoff,
+    topThr = 10000,
+
+    saveRawGseaResult = FALSE,
+    isOutput = FALSE
+)
+}
+
+#WebGestaltR function for KEGG
+web_call_KEGG <- function(x, cutoff = 0.05, bkg = sigAll, id = "entrezgene", path = 'pathway_KEGG'){
+WebGestaltR(
+   enrichMethod = "ORA",
+    organism = "hsapiens",
+    enrichDatabase = path,
+
+    interestGene = x,
+    interestGeneType = id,
+
+    referenceGene = bkg,
+    referenceGeneType = id,
+
+    minNum = 5,
+    maxNum = 500,
+    sigMethod = "fdr",
+    fdrMethod = "BH",
+    fdrThr = cutoff,
+    topThr = 10000,
+
+    saveRawGseaResult = FALSE,
+    isOutput = FALSE
+)
+}
+
+#WebGestaltR function for Hallmark50
+web_call_Hall <- function(x, cutoff = 0.05, bkg = sigAll, id = "entrezgene", path = 'community-contributed_Hallmark50'){
+WebGestaltR(
+   enrichMethod = "ORA",
+    organism = "hsapiens",
+    enrichDatabase = path,
+
+    interestGene = x,
+    interestGeneType = id,
+
+    referenceGene = bkg,
+    referenceGeneType = id,
+
+    minNum = 5,
+    maxNum = 500,
+    sigMethod = "fdr",
+    fdrMethod = "BH",
+    fdrThr = cutoff,
+    topThr = 10000,
+
+    saveRawGseaResult = FALSE,
+    isOutput = FALSE
+)
+}
+
+```
+
+```{r}
+#GO analysis for BP (UP and DOWN)
+
+up_bp <- web_call_BP(genes_sig_Up)
+
+up_bp_plot  <- ggplot(up_bp)+
+  geom_col(aes(x = enrichmentRatio, y = reorder(description, enrichmentRatio)), fill = "blue") +
+  theme_classic() +
+  theme(text = element_text(size = 10)) +
+  labs(title = "Biological Processes GO analysis (UP)", x = "enrichmentRatio", y = "Biological Process")
+
+down_bp <- web_call_BP(genes_sig_down)
+
+down_bp_plot  <- ggplot(down_bp)+
+  geom_col(aes(x = enrichmentRatio, y = reorder(description, enrichmentRatio)), fill = "orange") +
+  theme_classic() +
+  theme(text = element_text(size = 10)) +
+  labs(title = "Biological Processes GO analysis (DOWN)", x = "enrichmentRatio", y = "Biological Process")
+
+UpBp_path <- file.path(normalizePath(outputdir_SEQ), "UP_biological_processes_GO.png")
+DownBp_path <- file.path(normalizePath(outputdir_SEQ), "DWN_biological_processes_GO.png")
+
+ggsave(UpBp_path, plot = up_bp_plot, width = 8, height = 3, dpi = 300)
+ggsave(DownBp_path, plot = down_bp_plot, width = 8, height = 3, dpi = 300)
+
+up_bp_plot
+down_bp_plot
+```
+
+```{r}
+#GO analysis for MF (UP and DOWN)
+
+up_MF <- web_call_MF(genes_sig_Up)
+
+up_MF_plot  <- ggplot(up_MF)+
+  geom_col(aes(x = enrichmentRatio, y = reorder(description, enrichmentRatio)), fill = "blue") +
+  theme_classic() +
+  labs(title = "Molecular Function GO analysis (UP)", x = "enrichmentRatio", y = "Molecular Function")
+
+
+down_MF <- web_call_MF(genes_sig_down)
+
+down_MF_plot  <- ggplot(down_MF)+
+  geom_col(aes(x = enrichmentRatio, y = reorder(description, enrichmentRatio)), fill = "orange") +
+  theme_classic() +
+  labs(title = "Molecular Function GO analysis (DOWN)", x = "enrichmentRatio", y = "Molecular Function")
+
+UpMF_path <- file.path(normalizePath(outputdir_SEQ), "UP_molecular_function_GO.png")
+DownMF_path <- file.path(normalizePath(outputdir_SEQ), "DWN_molecular_function_GO.png")
+
+ggsave(UpMF_path, plot = up_MF_plot, width = 6, height = 3, dpi = 300)
+ggsave(DownMF_path, plot = down_MF_plot, width = 6, height = 3, dpi = 300)
+
+up_MF_plot
+down_MF_plot
+```
+
+```{r}
+#GO analysis for KEGG (UP and DOWN)
+
+up_KEGG <- web_call_KEGG(genes_sig_Up)
+
+up_KEGG_plot  <- ggplot(up_KEGG)+
+  geom_col(aes(x = enrichmentRatio, y = reorder(description, enrichmentRatio)), fill = "blue") +
+  theme_classic() +
+  labs(title = "KEGG GO analysis (UP)", x = "enrichmentRatio", y = "KEGG")
+
+down_KEGG <- web_call_KEGG(genes_sig_down)
+
+down_KEGG_plot  <- ggplot(down_KEGG)+
+  geom_col(aes(x = enrichmentRatio, y = reorder(description, enrichmentRatio)), fill = "orange") +
+  theme_classic() +
+  labs(title = "KEGG GO analysis (DOWN)", x = "enrichmentRatio", y = "KEGG")
+
+UpKEGG_path <- file.path(normalizePath(outputdir_SEQ), "UP_KEGG_GO.png")
+DownKEGG_path <- file.path(normalizePath(outputdir_SEQ), "DWN_KEGG_GO.png")
+
+ggsave(UpKEGG_path, plot = up_KEGG_plot, width = 6, height = 3, dpi = 300)
+ggsave(DownKEGG_path, plot = down_KEGG_plot, width = 6, height = 3, dpi = 300)
+
+up_KEGG_plot
+down_KEGG_plot
+```
+
+```{r}
+#GO analysis for Hallmark50 (UP and DOWN)
+
+up_Hall <- web_call_Hall(genes_sig_Up)
+
+up_Hall_plot  <- ggplot(up_Hall)+
+  geom_col(aes(x = enrichmentRatio, y = reorder(description, enrichmentRatio)), fill = "blue") +
+  theme_classic() +
+  labs(title = "Hallmark50 GO analysis (UP)", x = "enrichmentRatio", y = "Hallmarks 50")
+
+down_Hall <- web_call_Hall(genes_sig_down)
+
+down_Hall_plot  <- ggplot(down_Hall)+
+  geom_col(aes(x = enrichmentRatio, y = reorder(description, enrichmentRatio)), fill = "orange") +
+  theme_classic() +
+  labs(title = "Hallmark50 GO analysis (UP)", x = "enrichmentRatio", y = "Hallmarks 50")
+
+UpHall_path <- file.path(normalizePath(outputdir_SEQ), "UP_Hallmarks_GO.png")
+DownHall_path <- file.path(normalizePath(outputdir_SEQ), "DWN_Hallmarks_GO.png")
+
+ggsave(UpHall_path, plot = up_Hall_plot, width = 6, height = 3, dpi = 300)
+ggsave(DownHall_path, plot = down_Hall_plot, width = 6, height = 3, dpi = 300)
+
+up_Hall_plot
+down_Hall_plot
+```
+
+#GSEA analysis
+```{r}
+library(DESeq2)
+library(org.Hs.eg.db)
+library(AnnotationDbi)
+
+res_raw <- DESeq2::results(dds)
+
+res_raw$ENSEMBL <- gsub("\\..*", "", rownames(res_raw))
+
+res_raw$ENTREZ <- mapIds(
+  org.Hs.eg.db,
+  keys = res_raw$ENSEMBL,
+  column = "ENTREZID",
+  keytype = "ENSEMBL",
+  multiVals = "first"
+)
+
+res_raw <- res_raw[!is.na(res_raw$ENTREZ) & !is.na(res_raw$log2FoldChange), ]
+
+gene_list <- res_raw$log2FoldChange
+names(gene_list) <- as.character(res_raw$ENTREZ)
+gene_list <- sort(gene_list, decreasing = TRUE)
+
+gene_df <- data.frame(
+  gene = names(gene_list),
+  score = gene_list
+)
+
+```
+
+```{r}
+#set up WebGestaltR function for BP
+GSEA_call_BP <- function(x, cutoff = 0.05, id = "entrezgene",
+                       path = 'geneontology_Biological_Process_noRedundant'){
+
+  WebGestaltR(
+    enrichMethod = "GSEA",
+    organism = "hsapiens",
+    enrichDatabase = path,
+
+    interestGene = x,
+    interestGeneType = id,
+
+    minNum = 5,
+    maxNum = 500,
+    sigMethod = "fdr",
+    fdrMethod = "BH",
+    fdrThr = cutoff,
+    topThr = 10000,
+
+    saveRawGseaResult = TRUE,
+    isOutput = TRUE
+  )
+}
+
+#WebGestaltR function for MF
+GSEA_call_MF <- function(x, cutoff = 0.05, id = "entrezgene", path = 'geneontology_Molecular_Function_noRedundant'){
+WebGestaltR(
+   enrichMethod = "GSEA",
+    organism = "hsapiens",
+    enrichDatabase = path,
+
+    interestGene = x,
+    interestGeneType = id,
+
+    minNum = 5,
+    maxNum = 500,
+    sigMethod = "fdr",
+    fdrMethod = "BH",
+    fdrThr = cutoff,
+    topThr = 10000,
+
+    saveRawGseaResult = FALSE,
+    isOutput = FALSE
+)
+}
+
+#WebGestaltR function for KEGG
+GSEA_call_KEGG <- function(x, cutoff = 0.05, id = "entrezgene", path = 'pathway_KEGG'){
+WebGestaltR(
+   enrichMethod = "GSEA",
+    organism = "hsapiens",
+    enrichDatabase = path,
+
+    interestGene = x,
+    interestGeneType = id,
+
+
+    minNum = 5,
+    maxNum = 500,
+    sigMethod = "fdr",
+    fdrMethod = "BH",
+    fdrThr = cutoff,
+    topThr = 10000,
+
+    saveRawGseaResult = FALSE,
+    isOutput = FALSE
+)
+}
+
+#WebGestaltR function for Hallmark50
+GSEA_call_Hall <- function(x, cutoff = 0.05, id = "entrezgene", path = 'community-contributed_Hallmark50'){
+WebGestaltR(
+   enrichMethod = "GSEA",
+    organism = "hsapiens",
+    enrichDatabase = path,
+
+    interestGene = x,
+    interestGeneType = id,
+
+  
+    minNum = 5,
+    maxNum = 500,
+    sigMethod = "fdr",
+    fdrMethod = "BH",
+    fdrThr = cutoff,
+    topThr = 10000,
+
+    saveRawGseaResult = F,
+    isOutput = F
+)
+}
+
+```
+
+```{r}
+GSEA_BP <- GSEA_call_BP(gene_df)
+
+GSEA_MF <- GSEA_call_MF(gene_df)
+
+GSEA_KEGG <- GSEA_call_KEGG(gene_df)
+
+GSEA_Hall <- GSEA_call_Hall(gene_df)
+
+
+GSEABP_path <- file.path(normalizePath(outputdir_SEQ), "GSEA_BP.png")
+GSEAMF_path <- file.path(normalizePath(outputdir_SEQ), "GSEA_MF.png")
+GSEAKEGG_path <- file.path(normalizePath(outputdir_SEQ), "GSEA_KEGG.png")
+GSEAHall_path <- file.path(normalizePath(outputdir_SEQ), "GSEA_Hallmarks.png")
+
+```
+
+```{r}
+GSEA_BP_plot <- ggplot(GSEA_BP, aes(x = normalizedEnrichmentScore, y = reorder(description, normalizedEnrichmentScore), size = size, color = -log10(FDR))) +
+  geom_point()+
+  scale_color_gradient(
+    low = "blue", high = "red"
+  ) +
+  scale_size(range = c(3,10)) +
+  theme_bw() +
+  labs(
+    title = "GSEA Biological Processes",
+    x = "Normalized Enrichment Score",
+    y = "Biological Processes",
+    size = "Gene count",
+    color = "FDR"
+  )
+
+
+GSEA_MF_plot <- ggplot(GSEA_MF, aes(x = normalizedEnrichmentScore, y = reorder(description, normalizedEnrichmentScore), size = size, color = -log10(FDR))) +
+  geom_point()+
+  scale_color_gradient(
+    low = "blue", high = "red"
+  ) +
+  scale_size(range = c(3,10)) +
+  theme_bw() +
+  labs(
+    title = "GSEA Molecular Function",
+    x = "Normalized Enrichment Score",
+    y = "Molecular Function",
+    size = "Gene count",
+    color = "FDR"
+  )
+
+GSEA_KEGG_plot <- ggplot(GSEA_KEGG, aes(x = normalizedEnrichmentScore, y = reorder(description, normalizedEnrichmentScore), size = size, color = -log10(FDR))) +
+  geom_point()+
+  scale_color_gradient(
+    low = "blue", high = "red"
+  ) +
+  scale_size(range = c(3,10)) +
+  theme_bw() +
+  labs(
+    title = "GSEA KEGG",
+    x = "Normalized Enrichment Score",
+    y = "KEGG",
+    size = "Gene count",
+    color = "FDR"
+  )
+
+GSEA_Hall_plot <- ggplot(GSEA_Hall, aes(x = normalizedEnrichmentScore, y = reorder(description, normalizedEnrichmentScore), size = size, color = -log10(FDR))) +
+  geom_point()+
+  scale_color_gradient(
+    low = "blue", high = "red"
+  ) +
+  scale_size(range = c(3,10)) +
+  theme_bw() +
+  labs(
+    title = "GSEA Hallmarks 50",
+    x = "Normalized Enrichment Score",
+    y = "Hallmarks",
+    size = "Gene count",
+    color = "FDR"
+  )
+ggsave(GSEABP_path, plot = GSEA_BP, width = 4, height = 3, dpi = 300)
+ggsave(GSEAMF_path, plot = GSEA_MF, width = 8, height = 6, dpi = 300)
+ggsave(GSEAKEGG_path, plot = GSEA_KEGG, width = 8, height = 6, dpi = 300)
+ggsave(GSEAHall_path, plot = GSEA_Hall, width = 8, height = 6, dpi = 300)
+
+
+GSEA_BP_plot
+GSEA_MF_plot
+GSEA_KEGG_plot
+GSEA_Hall_plot
+```
+
+```{r}
+
+library(fgsea)
+library(ggplot2)
+
+output_seqGSEA <- file.path(outputdir_SEQ_GSEA, "GSEA_BP.pdf")
+
+pdf(output_seqGSEA, width = 6, height = 5)  # width/height in inches
+
+top_sets <- GSEA_BP[1:10, ]
+
+for (i in seq_len(nrow(top_sets))) {
+    
+    geneset <- strsplit(top_sets$leadingEdgeId[i], ";")[[1]]
+    geneset <- intersect(geneset, names(gene_list))
+    
+    if (length(geneset) < 5) {
+        message("Skipping: ", top_sets$description[i])
+        next
+    }
+    
+    # Create GSEA plot
+    p <- plotEnrichment(geneset, gene_list) +
+        ggtitle(paste0(
+            top_sets$description[i],
+            "\nNES = ", round(top_sets$normalizedEnrichmentScore[i], 2),
+            ", FDR = ", signif(top_sets$FDR[i], 2)
+        ))
+    
+    # Print to PDF (each print() = new page)
+    print(p)
+}
+
+dev.off()
+
+message("PDF saved to: ", output_seqGSEA)
+
+#MF GSEA
+output_seqGSEA <- file.path(outputdir_SEQ_GSEA, "GSEA_MF.pdf")
+
+pdf(output_seqGSEA, width = 6, height = 5)  # width/height in inches
+
+top_sets <- GSEA_MF[1:10, ]
+
+for (i in seq_len(nrow(top_sets))) {
+    
+    geneset <- strsplit(top_sets$leadingEdgeId[i], ";")[[1]]
+    geneset <- intersect(geneset, names(gene_list))
+    
+    if (length(geneset) < 5) {
+        message("Skipping: ", top_sets$description[i])
+        next
+    }
+    
+    # Create GSEA plot
+    p <- plotEnrichment(geneset, gene_list) +
+        ggtitle(paste0(
+            top_sets$description[i],
+            "\nNES = ", round(top_sets$normalizedEnrichmentScore[i], 2),
+            ", FDR = ", signif(top_sets$FDR[i], 2)
+        ))
+    
+    # Print to PDF (each print() = new page)
+    print(p)
+}
+
+dev.off()
+
+message("PDF saved to: ", output_seqGSEA)
+
+#KEGG GSEA
+output_seqGSEA <- file.path(outputdir_SEQ_GSEA, "GSEA_KEGG.pdf")
+
+pdf(output_seqGSEA, width = 6, height = 5)  # width/height in inches
+
+top_sets <- GSEA_KEGG[1:10, ]
+
+for (i in seq_len(nrow(top_sets))) {
+    
+    geneset <- strsplit(top_sets$leadingEdgeId[i], ";")[[1]]
+    geneset <- intersect(geneset, names(gene_list))
+    
+    if (length(geneset) < 5) {
+        message("Skipping: ", top_sets$description[i])
+        next
+    }
+    
+    # Create GSEA plot
+    p <- plotEnrichment(geneset, gene_list) +
+        ggtitle(paste0(
+            top_sets$description[i],
+            "\nNES = ", round(top_sets$normalizedEnrichmentScore[i], 2),
+            ", FDR = ", signif(top_sets$FDR[i], 2)
+        ))
+    
+    # Print to PDF (each print() = new page)
+    print(p)
+}
+
+dev.off()
+
+message("PDF saved to: ", output_seqGSEA)
+
+#Hallmarks50 GSEA
+output_seqGSEA <- file.path(outputdir_SEQ_GSEA, "GSEA_Hall.pdf")
+
+pdf(output_seqGSEA, width = 6, height = 5)  # width/height in inches
+
+top_sets <- GSEA_Hall[1:10, ]
+
+for (i in seq_len(nrow(top_sets))) {
+    
+    geneset <- strsplit(top_sets$leadingEdgeId[i], ";")[[1]]
+    geneset <- intersect(geneset, names(gene_list))
+    
+    if (length(geneset) < 5) {
+        message("Skipping: ", top_sets$description[i])
+        next
+    }
+    
+    # Create GSEA plot
+    p <- plotEnrichment(geneset, gene_list) +
+        ggtitle(paste0(
+            top_sets$description[i],
+            "\nNES = ", round(top_sets$normalizedEnrichmentScore[i], 2),
+            ", FDR = ", signif(top_sets$FDR[i], 2)
+        ))
+    
+    # Print to PDF (each print() = new page)
+    print(p)
+}
+
+dev.off()
+
+message("PDF saved to: ", output_seqGSEA)
+```
+
+
+#ggsashimi DESEq2 top 100 events
+```{r}
+#generate ggsashimi plots for top 100 events abs(dPSI) > 0.01 and deposit to rMATS folder
+library(ggplot2)
+library(data.table)
+library(gridExtra)
+
+#generate .tsv table for ggsashimi DESEq run
+SEQ_top100 <- bind_rows(
+  slice_head(res_df_allfilt, n = 100)
+)
+res_ggsashimi_genes <- rownames(SEQ_top100) 
+
+gtf <- read.delim(
+  gtf.path,
+  header = FALSE,
+  comment.char = "#",
+  stringsAsFactors = FALSE
+)
+
+colnames(gtf) <- c(
+  "chr","source","feature","start","end",
+  "score","strand","frame","attribute"
+)
+
+gene_info <- lapply(res_ggsashimi_genes, function(gene){
+
+  row <- gtf[
+    grepl(paste0("gene_id ", gene), gtf$attribute) &
+    gtf$feature == "gene",
+  ][1,]
+
+  list(
+    region = paste0(row$chr, ":", row$start, "-", row$end),
+    gene_name = sub('.*gene_name ([^;]+);.*', '\\1', row$attribute)
+  )
+})
+
+DEseq_regions <- sapply(gene_info, '[[', "region")
+Seq_genes <- sapply(gene_info, '[[', "gene_name")
+
+
+colors_key <- c(rep("#1f77b4",Replicates), rep("#ff7f0e", Replicates))
+#gg.bams <- c(unlist(bam_files[which(grepl("\\.bam$", bam_files)&grepl("_LM2", bam_files))]))
+reps <- 1:Replicates
+rep_nums <- rep(reps, each = 1)
+Ungrp <- unfactor(Group) %>% paste0(rep_nums)
+bams.tsv <-  data.frame(group = Ungrp, bams = gg.bams, colorsK = colors_key )
+
+write_tsv(bams.tsv, file.path(outputdir_base, "gg_bams.tsv"))
+
+
+
+ggsashimi_path <- path.expand("~/ggsashimi/ggsashimi.py")
+bam_tsv <- normalizePath(file.path(outputdir_base, "gg_bams.tsv"))
+
+  
+for(i in seq_along(DEseq_regions)){
+  
+  region <- DEseq_regions[i]
+  gene_name <- Seq_genes[i]
+
+  safe_region <- gsub("[:\\-]", "_", region)
+  safe_name <- paste0(safe_region, "_", gene_name)
+  
+  
+  tryCatch(
+  system2("/home/bree/miniforge3/envs/rmats_env/bin/python3", args = c(
+    ggsashimi_path,
+    "-b", shQuote(bam_tsv),
+    "-c", shQuote(region),
+    "-C", 3,
+    "-M", 5000,
+    "--fix-y-scale",
+    "-g", shQuote("/media/bree/Expansion/gencode.v24.primary_assembly.annotation.gtf"),
+    "-o", shQuote(file.path(outputdir_SEQ_allsashimi, paste0(safe_name, ".pdf")))
+    )
+  ),
+    error = function(e){
+      message("Failed region: ", region)
+    } 
+ 
+  )
+  
+}
+
+
+DESEQ_sashimi <- list.files(outputdir_SEQ_allsashimi, pattern = "\\.pdf$", full.names = TRUE)
+#order of gene names for labeled merged pdf
+genes <- sapply(DESEQ_sashimi, function(name_path){
+  sub('.*\\d_([^_]+)\\..*', "\\1", name_path)
+}) %>% as.vector()
+
+output_file <- normalizePath(
+  file.path(outputdir_SEQ, "temp_100Events.pdf"),
+  mustWork = FALSE
+)
+
+
+library(pdftools)
+dir.create(dirname(output_file), recursive = TRUE, showWarnings = FALSE)
+pdf_combine(DESEQ_sashimi, output = output_file)
+
+library(pdftools)
+library(grid)
+library(grDevices)
+
+merged_pdf <- output_file
+
+n_pages <- pdf_info(merged_pdf)$pages
+
+```
+
+#label and merge Seq sashimi plots for final pdf
+```{r}
+library(pdftools)
+library(png)
+library(grid)
+
+merged_pdf <- output_file
+n_pages <- pdf_info(merged_pdf)$pages
+
+
+tmp_pngs <- pdf_convert(merged_pdf, format = "png", dpi = 150)
+
+annotated_pdfs <- character(n_pages)
+
+for(i in seq_along(tmp_pngs)){
+
+  img <- png::readPNG(tmp_pngs[i])
+
+  out_pdf <- file.path(tempdir(), sprintf("page_%03d.pdf", i))
+  annotated_pdfs[i] <- out_pdf
+
+  pdf(out_pdf, width = 8, height = 6)
+
+  grid.raster(img,
+              x = 0.5, y = 0.5,
+              width = unit(1, "npc"),
+              height = unit(1, "npc"))
+
+  grid.text(genes[i],
+            x = 0.5, y = 0.97,
+            gp = gpar(fontsize = 16, fontface = "bold"))
+
+  dev.off()
+}
+
+
+final_pdf <- file.path(outputdir_SEQ, "top_100_events_labeled.pdf")
+
+pdf_combine(annotated_pdfs, output = final_pdf)
+```
+
+
+
+#Run rMATS in terminal
+```{r}
+rMATS_path <- path.expand("~/rmats_env/bin/python/rmats.py")
+system2("/home/bree/miniforge3/envs/rmats_env/bin/python", args = c(
+  rMATS_path,
+  "--b1", ctrl_bams.path,
+  "--b2", KD_bams.path,
+  "--gtf", gtf.path,
+  "-t", "paired",
+  "--readLength", 150,
+  "--nthread", 12,
+  "--od", outputdir_MATSfiles,
+  "--tmp", outputdir_MATSfiles,
+  "--individual-counts", 
+  "--novelSS",
+  "--variable-read-length"
+  )
+  
+)
+```
+
+#Start excel for rMATS outputs
+```{r}
+#select folder to send rMATS data processing output
+
+
+fileName_M = paste0(cell_line, "_", perturbation, "_rMATS.xlsx")
+
+outfile_M = paste(outputdir_MATS, fileName_M, sep = "/")
+
+#README sheet at the start of excel
+Sheet_M <- c("Overall description", "", "", "raw_rMATS_JCEC", "", "", "rMATS_w_TPM", "", "",
+                       "padj_0.05", "", "", "dPSI_0.1", "", "", "", "", "", "")
+t_M <- c("-->", "", "", "-->", "", "", "-->", "", "",
+                       "-->", "", "", "-->","","", "Initials","Cell line", "Perturbation", "Date of processing")
+Sheet_description_M <- c("List all output data associated with rMATS pipeline", "", "", "raw rMATS output for JCEC (junction reads and exon reads) file", "", "", "rMATS JCEC output with TPM according to ensembl ID. For more information regarding column names refer to link below:", "https://github.com/Xinglab/rmats-turbo#output", "", "dPSI_0.1 data filtered further for padj values (FDR) < 0.05", "", "", "rMATS_w_TPM data filtered for dPSI abs(IncLevelDifference) > 0.1", "", "", Initials, cell_line, perturbation, date())
+README_df_M <- data.frame(Sheet = Sheet_M, t_ = t_M, Sheet_description = Sheet_description_M )
+
+wb2 <- createWorkbook()
+addWorksheet(wb2, "README")
+writeData(wb2, "README", README_df_M)
+saveWorkbook(wb2, file = outfile_M, overwrite = TRUE)
+```
+
+
+```{r}
+#Raw rMATS output
+MATS.path <- outputdir_MATSfiles
+
+MATS_files <- list.files(MATS.path, full.names = TRUE)
+
+JCEC.path <- list.files(
+    "/media/bree/Main_storage/siSFPQ_LM2_rMATS_output",
+    pattern = "*SE.*MATS.*JCEC.txt$",
+    full.names = TRUE
+)
+
+JCEC.path <- normalizePath(JCEC.path)
+
+
+
+  
+SE_MATS_JCEC <- tryCatch({
+  read_delim(JCEC.path, delim = "\t", na = c("", "NA"))
+}, error = function(e){
+  message("Error reading file: ", e$message)
+  NULL
+})
+SE_MATS_JCEC <- SE_MATS_JCEC[order(SE_MATS_JCEC$FDR),]
+addWorksheet(wb2, "raw_rMATS_JCEC")
+writeData(wb2, "raw_rMATS_JCEC",SE_MATS_JCEC )
+saveWorkbook(wb2, file = outfile_M, overwrite = TRUE)
+
+SE_MATS_JCEC$GeneID <- gsub("\\..*", "", SE_MATS_JCEC$GeneID)
+
+
+MATS_geneList <- SE_MATS_JCEC$geneSymbol
+
+SE_MATS_JCEC <- cbind(
+  SE_MATS_JCEC,
+  with_TPM[match(SE_MATS_JCEC$geneSymbol, rownames(with_TPM)),1:6]
+)
+SE_MATS_JCEC <- SE_MATS_JCEC %>%
+  relocate(geneSymbol, .before = 1)
+SE_MATS_JCEC <- SE_MATS_JCEC %>% 
+  mutate(gene = geneSymbol, .after = upstream_to_downstream_count)
+SE_MATS_JCEC<- SE_MATS_JCEC %>%
+  mutate(query = GeneID)
+
+SE_MATS_JCEC <- SE_MATS_JCEC %>%
+  mutate(across(colnames(with_TPM)[1:6], ~ round(.x, 2)))
+
+addWorksheet(wb2, "rMATS_w_TPM")
+writeData(wb2, "rMATS_w_TPM",SE_MATS_JCEC )
+saveWorkbook(wb2, file = outfile_M, overwrite = TRUE)
+
+SJC_inidividual <- as.vector(str_split(SE_MATS_JCEC$SJC_SAMPLE_1, ",")) %>% sapply(function(x){mean(as.integer(x))}) 
+
+SE_COUNT_JCEC <- SE_MATS_JCEC[which(SJC_inidividual >= 10), ]
+
+addWorksheet(wb2, "ctrl_SJC_10")
+writeData(wb2, "ctrl_SJC_10", SE_COUNT_JCEC)
+saveWorkbook(wb2, file = outfile_M, overwrite = TRUE)
+
+#filter for padj (FDR) < 0.05
+SE_PADJ_JCEC <- SE_COUNT_JCEC %>%
+  filter(FDR < 0.05)
+addWorksheet(wb2, "padj_0.05")
+writeData(wb2, "padj_0.05",SE_PADJ_JCEC )
+saveWorkbook(wb2, file = outfile_M, overwrite = TRUE)
+
+#filter for dPSI and remove NAs from Inc groups 1 and 2  
+SE_PSI_JCEC <- SE_PADJ_JCEC %>% 
+  filter(abs(IncLevelDifference) > 0.1) %>% 
+  filter(!grepl("NA", IncLevel1)) %>% filter(!grepl("NA", IncLevel2))
+
+gene_info_MATS <- getGenes(geneids = SE_PSI_JCEC$GeneID, fields = "summary") 
+gene_deduped_MATS <- gene_info_MATS[which(!duplicated(gene_info_MATS$query)),]
+gene_desc_MATS <- gene_deduped_MATS[,c("query", "summary")] %>% as.data.frame()
+
+SE_PSI_JCEC <- SE_PSI_JCEC %>%
+  left_join(gene_desc_MATS, by = "query")
+
+addWorksheet(wb2, "dPSI_0.1")
+writeData(wb2, "dPSI_0.1",SE_PSI_JCEC )
+saveWorkbook(wb2, file = outfile_M, overwrite = TRUE)
+
+```
+#ggsashimi plots for top 100 events MATS
+```{r}
+#generate ggsashimi plots for top 100 events abs(dPSI) > 0.01 and deposit to rMATS folder
+library(ggplot2)
+library(data.table)
+library(gridExtra)
+
+SE_top_JCEC <- SE_PSI_JCEC[, c("chr", "upstreamEE", "downstreamES", "IncLevelDifference", "gene", "FDR")]
+SE_top_JCEC <- SE_top_JCEC[order(SE_top_JCEC$IncLevelDifference),]
+SE_top100_JCEC <- bind_rows(
+  slice_head(SE_top_JCEC, n = 100)
+)
+
+SE_bottom100_JCEC <- bind_rows(
+  slice_tail(SE_top_JCEC, n = 100)
+)
+
+event_regionstop <- character(nrow(SE_top100_JCEC))
+event_regionTOP_expanded <- character(nrow(SE_top100_JCEC))
+
+for(i in seq_len(nrow(SE_top100_JCEC))){
+  chrom <- SE_top100_JCEC$chr[i]
+  jxn_up <- SE_top100_JCEC$upstreamEE[i]
+  jxn_down <- SE_top100_JCEC$downstreamES[i]
+  
+  jxn_leng <- jxn_down - jxn_up
+  
+   pading <- max(300, min(1000, round(jxn_leng * 0.5)))
+  
+  jxn_up_exp <- max(1, as.numeric(jxn_up) - pading)
+  jxn_down_exp <- as.numeric(jxn_down) + pading 
+  
+  step1 <- paste(c(chrom, jxn_up), collapse = ":")
+  step2 <- paste(c(step1, jxn_down), collapse = "-")
+  
+  event_regionstop[i] <- step2
+  
+  event_regionTOP_expanded[i] <- paste0(chrom, ":", jxn_up_exp, "-",jxn_down_exp)
+  
+}
+SE_top100_JCEC$regions <- event_regionstop
+
+event_regionsbot <- character(nrow(SE_bottom100_JCEC))
+event_regionBOT_expanded <- character(nrow(SE_bottom100_JCEC))
+for(i in seq_len(nrow(SE_bottom100_JCEC))){
+  chrom <- SE_bottom100_JCEC$chr[i]
+  jxn_up <- SE_bottom100_JCEC$upstreamEE[i]
+  jxn_down <- SE_bottom100_JCEC$downstreamES[i]
+  
+  jxn_leng <- jxn_down - jxn_up
+  
+  pading <- max(300, min(1000, round(jxn_leng * 0.5)))
+  
+  jxn_up_exp <- max(1, as.numeric(jxn_up) - pading)
+  jxn_down_exp <- as.numeric(jxn_down) + pading 
+  
+  step1 <- paste(c(chrom, jxn_up), collapse = ":")
+  step2 <- paste(c(step1, jxn_down), collapse = "-")
+  
+  event_regionsbot[i] <- step2
+  
+  event_regionBOT_expanded[i] <- paste0(chrom, ":", jxn_up_exp, "-",jxn_down_exp)
+  
+  
+}
+SE_bottom100_JCEC$regions <- event_regionsbot
+
+MATSTOP_sashimi_regions <- event_regionstop
+MATSBOT_sashimi_regions <- event_regionsbot
+
+MATSTOP_sashimi_genes <- SE_top100_JCEC$gene
+MATSBOT_sashimi_genes <- SE_bottom100_JCEC$gene
+
+#top 100
+for(i in seq_along(MATSTOP_sashimi_regions)){
+  
+  region <- event_regionTOP_expanded[i]
+  gene_name <- MATSTOP_sashimi_genes[i]
+  
+  safe_region <- gsub("[:\\-]", "_", i)
+  safe_name <- paste0(safe_region, "_", gene_name, "_top100")
+  
+  tryCatch(
+  system2("/home/bree/miniforge3/envs/rmats_env/bin/python3", args = c(
+    ggsashimi_path,
+    "-b", shQuote(bam_tsv),
+    "-c", shQuote(region),
+    "-L", 1,
+    "-C", 3,
+    "-g", shQuote(gtf.path),
+    "-o", shQuote(file.path(outputdir_MATS_allsashimi, paste0(safe_name, ".pdf")))
+    )
+  ), 
+   error = function(e){ message("Failed region: ", i)}
+  )
+  
+}
+
+#bottom 100
+for(i in seq_along(MATSBOT_sashimi_regions)){
+  
+  region <- event_regionBOT_expanded[i]
+  gene_name <- MATSBOT_sashimi_genes[i]
+  
+  safe_region <- gsub("[:\\-]", "_", i)
+  safe_name <- paste0(safe_region, "_", gene_name,"_bottom100")
+  
+  tryCatch(
+  system2("/home/bree/miniforge3/envs/rmats_env/bin/python3", args = c(
+    ggsashimi_path,
+    "-b", shQuote(bam_tsv),
+    "-c", shQuote(region),
+    "-L", 1,
+    "-C", 3,
+    "--width", 25,
+    "--shrink",
+    "-g", shQuote(gtf.path),
+    "-o", shQuote(file.path(outputdir_MATS_allsashimi, paste0(safe_name, ".pdf")))
+    )
+  ), 
+   error = function(e){ message("Failed region: ", i)}
+  )
+  
+}
+
+MATS_sashimi <- list.files(outputdir_MATS_allsashimi, pattern = "\\.pdf$", full.names = TRUE)
+
+output_file_MATS <- normalizePath(
+  file.path(outputdir_MATS, "top_100_MAT_TEMP.pdf"),
+  mustWork = FALSE
+)
+coords <- sapply(MATS_sashimi, function(coord_path){
+  sub(".*/|\\.pdf$", "", coord_path)
+}) %>% as.vector()
+
+
+library(pdftools)
+dir.create(dirname(output_file_MATS), recursive = TRUE, showWarnings = FALSE)
+pdf_combine(MATS_sashimi, output = output_file_MATS)
+
+
+```
+
+```{r}
+#label and combine pdf with coordinates and gene name
+library(pdftools)
+library(png)
+library(grid)
+
+merged_pdf <- output_file_MATS
+n_pages <- pdf_info(merged_pdf)$pages
+
+
+
+
+tmp_pngs <- pdf_convert(merged_pdf, format = "png", dpi = 150)
+
+annotated_pdfs <- character(n_pages)
+
+for(i in seq_along(tmp_pngs)){
+
+  img <- png::readPNG(tmp_pngs[i])
+
+  out_pdf <- file.path(tempdir(), sprintf("page_%03d.pdf", i))
+  annotated_pdfs[i] <- out_pdf
+
+  pdf(out_pdf, width = 8, height = 6)
+
+  grid.raster(img,
+              x = 0.5, y = 0.5,
+              width = unit(1, "npc"),
+              height = unit(1, "npc"))
+
+  grid.text(coords[i],
+            x = 0.5, y = 0.97,
+            gp = gpar(fontsize = 16, fontface = "bold"))
+
+  dev.off()
+}
+
+
+final_pdf <- file.path(outputdir_MATS, "top_100_events_labeled.pdf")
+
+pdf_combine(annotated_pdfs, output = final_pdf)
+```
+
+#dPSI volcano plot
+```{r}
+library(ggplot2)
+library(ggrepel)
+
+
+if(!requireNamespace("pacman"))install.packages("pacman")
+pacman::p_load(here,
+               tidyverse,
+               janitor,
+               scales,
+               ggrepel)
+
+vol_plot <- SE_PSI_JCEC %>%
+  ggplot(aes(x = IncLevelDifference,
+             y = -log10(FDR))) +
+  geom_vline(xintercept = c(0.1, -0.1),
+             linetype = "dashed") +
+  geom_hline(yintercept = -log10(0.05),
+             linetype = "dashed") +
+  ylim(-1, 15) +
+  labs(title = paste0(cell_line," ", perturbation, " dPSI distribution")) + 
+  geom_point(color = "grey")+
+  geom_point(data = SE_top100_JCEC,aes(x = IncLevelDifference,
+             y = -log10(FDR), color = "red")) +
+  geom_text_repel(data = SE_top100_JCEC,aes(x = IncLevelDifference,
+             y = -log10(FDR),
+             label = gene)) +
+  theme_classic()
+  
+
+MATS_vol_path <- file.path(normalizePath(outputdir_MATS), "rMATS_volcano.png")
+ggsave(MATS_vol_path, plot = vol_plot, width = 8, height = 6, dpi = 300)
+
+vol_plot
+
+```
+
+#set up GO analysis
+```{r}
+library(clusterProfiler)
+library(enrichplot)
+library(org.Hs.eg.db)
+
+JCEC_df <- SE_MATS_JCEC
+
+JCEC_df <- SE_PSI_JCEC
+
+# JCEC_df <- SE_MATS_JCEC[!is.na(SE_MATS_JCEC$FDR), ]
+# JCEC_df$GeneID <- sub("\\..*", "", JCEC_df$GeneID)
+
+JCEC_sig_up <- subset(JCEC_df, FDR < 0.05 & IncLevelDifference >= 0.1)
+JCEC_sig_up <- JCEC_sig_up[!is.na(JCEC_sig_up$GeneID),]
+JCEC_sig_up <- JCEC_sig_up[!is.na(JCEC_sig_up$IncLevelDifference),]
+JCEC_sig_up <- JCEC_sig_up$GeneID %>% unique()
+
+JCEC_sig_down <- subset(JCEC_df, FDR < 0.05 & IncLevelDifference <= -0.1)
+JCEC_sig_down <- JCEC_sig_down[!is.na(JCEC_sig_down$GeneID),]
+JCEC_sig_down <- JCEC_sig_down[!is.na(JCEC_sig_down$IncLevelDifference),]
+JCEC_sig_down <- JCEC_sig_down$GeneID %>% unique()
+
+genes_sig <-JCEC_df$GeneID %>% unique()
+
+```
+
+
+```{r}
+#set up Webgestalt package
+library(WebGestaltR)
+
+```
+
+```{r}
+#set up WebGestaltR function for BP
+web_call_BP <- function(x, cutoff = 0.05, bkg = genes_sig, id = "ensembl_gene_id",
+                       path = 'geneontology_Biological_Process_noRedundant'){
+
+  WebGestaltR(
+    enrichMethod = "ORA",
+    organism = "hsapiens",
+    enrichDatabase = path,
+
+    interestGene = x,
+    interestGeneType = id,
+
+    referenceGene = bkg,
+    referenceGeneType = id,
+
+    minNum = 5,
+    maxNum = 500,
+    sigMethod = "fdr",
+    fdrMethod = "BH",
+    fdrThr = cutoff,
+    topThr = 10000,
+
+    saveRawGseaResult = FALSE,
+    isOutput = FALSE
+  )
+}
+
+#WebGestaltR function for MF
+web_call_MF <- function(x, cutoff = 0.05, bkg = genes_sig, id = "ensembl_gene_id", path = 'geneontology_Molecular_Function_noRedundant'){
+WebGestaltR(
+   enrichMethod = "ORA",
+    organism = "hsapiens",
+    enrichDatabase = path,
+
+    interestGene = x,
+    interestGeneType = id,
+
+    referenceGene = bkg,
+    referenceGeneType = id,
+
+    minNum = 5,
+    maxNum = 500,
+    sigMethod = "fdr",
+    fdrMethod = "BH",
+    fdrThr = cutoff,
+    topThr = 10000,
+
+    saveRawGseaResult = FALSE,
+    isOutput = FALSE
+)
+}
+
+#WebGestaltR function for KEGG
+web_call_KEGG <- function(x, cutoff = 0.05, bkg = genes_sig, id = "ensembl_gene_id", path = 'pathway_KEGG'){
+WebGestaltR(
+   enrichMethod = "ORA",
+    organism = "hsapiens",
+    enrichDatabase = path,
+
+    interestGene = x,
+    interestGeneType = id,
+
+    referenceGene = bkg,
+    referenceGeneType = id,
+
+    minNum = 5,
+    maxNum = 500,
+    sigMethod = "fdr",
+    fdrMethod = "BH",
+    fdrThr = cutoff,
+    topThr = 10000,
+
+    saveRawGseaResult = FALSE,
+    isOutput = FALSE
+)
+}
+
+#WebGestaltR function for Hallmark50
+web_call_Hall <- function(x, cutoff = 0.05, bkg = genes_sig, id = "ensembl_gene_id", path = 'community-contributed_Hallmark50'){
+WebGestaltR(
+   enrichMethod = "ORA",
+    organism = "hsapiens",
+    enrichDatabase = path,
+
+    interestGene = x,
+    interestGeneType = id,
+
+    referenceGene = bkg,
+    referenceGeneType = id,
+
+    minNum = 5,
+    maxNum = 500,
+    sigMethod = "fdr",
+    fdrMethod = "BH",
+    fdrThr = cutoff,
+    topThr = 10000,
+
+    saveRawGseaResult = FALSE,
+    isOutput = FALSE
+)
+}
+
+```
+
+```{r}
+#GO analysis for BP (UP and DOWN)
+
+up_bp <- web_call_BP(JCEC_sig_up, cutoff = 0.25)
+
+up_bp <- web_call_BP(JCEC_sig_up, cutoff = 0.75)
+
+
+up_bp_plot  <- ggplot(up_bp)+
+  geom_col(aes(x = enrichmentRatio, y = reorder(description, enrichmentRatio)), fill = "blue") +
+  theme_classic() +
+  theme(text = element_text(size = 10)) +
+  labs(title = "Biological Processes GO analysis (UP)", x = "enrichmentRatio", y = "Biological Process")
+
+down_bp <- web_call_BP(JCEC_sig_down, cutoff = 0.5)
+
+down_bp_plot  <- ggplot(down_bp)+
+  geom_col(aes(x = enrichmentRatio, y = reorder(description, enrichmentRatio)), fill = "orange") +
+  theme_classic() +
+  theme(text = element_text(size = 10)) +
+  labs(title = "Biological Processes GO analysis (DOWN)", x = "enrichmentRatio", y = "Biological Process")
+
+UpBp_path <- file.path(normalizePath(outputdir_MATS), "MATS_UP_BP_GO.png")
+DownBp_path <- file.path(normalizePath(outputdir_MATS), "MATS_DWN_BP_GO.png")
+
+ggsave(UpBp_path, plot = up_bp_plot, width = 8, height = 3, dpi = 300)
+ggsave(DownBp_path, plot = down_bp_plot, width = 8, height = 3, dpi = 300)
+
+up_bp_plot
+down_bp_plot
+```
+
+```{r}
+#GO analysis for MF (UP and DOWN)
+
+up_MF <- web_call_MF(JCEC_sig_up, cutoff = 1)
+
+up_MF_plot  <- ggplot(up_MF)+
+  geom_col(aes(x = enrichmentRatio, y = reorder(description, enrichmentRatio)), fill = "blue") +
+  theme_classic() +
+  labs(title = "Molecular Function GO analysis (UP)", x = "enrichmentRatio", y = "Molecular Function")
+
+
+down_MF <- web_call_MF(JCEC_sig_down)
+
+down_MF_plot  <- ggplot(down_MF)+
+  geom_col(aes(x = enrichmentRatio, y = reorder(description, enrichmentRatio)), fill = "orange") +
+  theme_classic() +
+  labs(title = "Molecular Function GO analysis (DOWN)", x = "enrichmentRatio", y = "Molecular Function")
+
+UpMF_path <- file.path(normalizePath(outputdir_MATS), "MATS_UP_MF_GO.png")
+DownMF_path <- file.path(normalizePath(outputdir_MATS), "MATS_DWN_MF_GO.png")
+
+ggsave(UpMF_path, plot = up_MF_plot, width = 6, height = 3, dpi = 300)
+ggsave(DownMF_path, plot = down_MF_plot, width = 6, height = 3, dpi = 300)
+
+up_MF_plot
+down_MF_plot
+```
+
+```{r}
+#GO analysis for KEGG (UP and DOWN)
+
+up_KEGG <- web_call_KEGG(JCEC_sig_up, cutoff = 0.75)
+
+up_KEGG_plot  <- ggplot(up_KEGG)+
+  geom_col(aes(x = enrichmentRatio, y = reorder(description, enrichmentRatio)), fill = "blue") +
+  theme_classic() +
+  labs(title = "KEGG GO analysis (UP)", x = "enrichmentRatio", y = "KEGG")
+
+down_KEGG <- web_call_KEGG(JCEC_sig_down)
+
+down_KEGG_plot  <- ggplot(down_KEGG)+
+  geom_col(aes(x = enrichmentRatio, y = reorder(description, enrichmentRatio)), fill = "orange") +
+  theme_classic() +
+  labs(title = "KEGG GO analysis (DOWN)", x = "enrichmentRatio", y = "KEGG")
+
+UpKEGG_path <- file.path(normalizePath(outputdir_SEQ), "UP_KEGG_GO.png")
+DownKEGG_path <- file.path(normalizePath(outputdir_SEQ), "DWN_KEGG_GO.png")
+
+ggsave(UpKEGG_path, plot = up_KEGG_plot, width = 6, height = 3, dpi = 300)
+ggsave(DownKEGG_path, plot = down_KEGG_plot, width = 6, height = 3, dpi = 300)
+
+up_KEGG_plot
+down_KEGG_plot
+```
+
+```{r}
+#GO analysis for Hallmark50 (UP and DOWN)
+
+up_Hall <- web_call_Hall(JCEC_sig_up, cutoff = 0.5)
+
+up_Hall_plot  <- ggplot(up_Hall)+
+  geom_col(aes(x = enrichmentRatio, y = reorder(description, enrichmentRatio)), fill = "blue") +
+  theme_classic() +
+  labs(title = "Hallmark50 GO analysis (UP)", x = "enrichmentRatio", y = "Hallmarks 50")
+
+down_Hall <- web_call_Hall(JCEC_sig_down)
+
+down_Hall_plot  <- ggplot(down_Hall)+
+  geom_col(aes(x = enrichmentRatio, y = reorder(description, enrichmentRatio)), fill = "orange") +
+  theme_classic() +
+  labs(title = "Hallmark50 GO analysis (UP)", x = "enrichmentRatio", y = "Hallmarks 50")
+
+UpHall_path <- file.path(normalizePath(outputdir_SEQ), "UP_Hallmarks_GO.png")
+DownHall_path <- file.path(normalizePath(outputdir_SEQ), "DWN_Hallmarks_GO.png")
+
+ggsave(UpHall_path, plot = up_Hall_plot, width = 6, height = 3, dpi = 300)
+ggsave(DownHall_path, plot = down_Hall_plot, width = 6, height = 3, dpi = 300)
+
+up_Hall_plot
+down_Hall_plot
+```
+#commented out until GSEA method is fixed for rMATS output
+<!-- #GSEA analysis -->
+<!-- ```{r} -->
+<!-- library(DESeq2) -->
+<!-- library(org.Hs.eg.db) -->
+<!-- library(AnnotationDbi) -->
+
+<!-- res_raw <- DESeq2::results(dds) -->
+
+<!-- res_raw$ENSEMBL <- gsub("\\..*", "", rownames(res_raw)) -->
+
+<!-- res_raw$ENTREZ <- mapIds( -->
+<!--   org.Hs.eg.db, -->
+<!--   keys = res_raw$ENSEMBL, -->
+<!--   column = "ENTREZID", -->
+<!--   keytype = "ENSEMBL", -->
+<!--   multiVals = "first" -->
+<!-- ) -->
+
+<!-- res_raw <- res_raw[!is.na(res_raw$ENTREZ) & !is.na(res_raw$log2FoldChange), ] -->
+
+<!-- gene_list <- res_raw$log2FoldChange -->
+<!-- names(gene_list) <- as.character(res_raw$ENTREZ) -->
+<!-- gene_list <- sort(gene_list, decreasing = TRUE) -->
+
+<!-- gene_df <- data.frame( -->
+<!--   gene = names(gene_list), -->
+<!--   score = gene_list -->
+<!-- ) -->
+
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- #set up WebGestaltR function for BP -->
+<!-- GSEA_call_BP <- function(x, cutoff = 0.05, id = "ensembl_gene_id", -->
+<!--                        path = 'geneontology_Biological_Process_noRedundant'){ -->
+
+<!--   WebGestaltR( -->
+<!--     enrichMethod = "GSEA", -->
+<!--     organism = "hsapiens", -->
+<!--     enrichDatabase = path, -->
+
+<!--     interestGene = x, -->
+<!--     interestGeneType = id, -->
+
+<!--     minNum = 5, -->
+<!--     maxNum = 500, -->
+<!--     sigMethod = "fdr", -->
+<!--     fdrMethod = "BH", -->
+<!--     fdrThr = cutoff, -->
+<!--     topThr = 10000, -->
+
+<!--     saveRawGseaResult = TRUE, -->
+<!--     isOutput = TRUE -->
+<!--   ) -->
+<!-- } -->
+
+<!-- #WebGestaltR function for MF -->
+<!-- GSEA_call_MF <- function(x, cutoff = 0.05, id = "ensembl_gene_id", path = 'geneontology_Molecular_Function_noRedundant'){ -->
+<!-- WebGestaltR( -->
+<!--    enrichMethod = "GSEA", -->
+<!--     organism = "hsapiens", -->
+<!--     enrichDatabase = path, -->
+
+<!--     interestGene = x, -->
+<!--     interestGeneType = id, -->
+
+<!--     minNum = 5, -->
+<!--     maxNum = 500, -->
+<!--     sigMethod = "fdr", -->
+<!--     fdrMethod = "BH", -->
+<!--     fdrThr = cutoff, -->
+<!--     topThr = 10000, -->
+
+<!--     saveRawGseaResult = FALSE, -->
+<!--     isOutput = FALSE -->
+<!-- ) -->
+<!-- } -->
+
+<!-- #WebGestaltR function for KEGG -->
+<!-- GSEA_call_KEGG <- function(x, cutoff = 0.05, id = "ensembl_gene_id", path = 'pathway_KEGG'){ -->
+<!-- WebGestaltR( -->
+<!--    enrichMethod = "GSEA", -->
+<!--     organism = "hsapiens", -->
+<!--     enrichDatabase = path, -->
+
+<!--     interestGene = x, -->
+<!--     interestGeneType = id, -->
+
+
+<!--     minNum = 5, -->
+<!--     maxNum = 500, -->
+<!--     sigMethod = "fdr", -->
+<!--     fdrMethod = "BH", -->
+<!--     fdrThr = cutoff, -->
+<!--     topThr = 10000, -->
+
+<!--     saveRawGseaResult = FALSE, -->
+<!--     isOutput = FALSE -->
+<!-- ) -->
+<!-- } -->
+
+<!-- #WebGestaltR function for Hallmark50 -->
+<!-- GSEA_call_Hall <- function(x, cutoff = 0.05, id = "ensembl_gene_id", path = 'community-contributed_Hallmark50'){ -->
+<!-- WebGestaltR( -->
+<!--    enrichMethod = "GSEA", -->
+<!--     organism = "hsapiens", -->
+<!--     enrichDatabase = path, -->
+
+<!--     interestGene = x, -->
+<!--     interestGeneType = id, -->
+
+
+<!--     minNum = 5, -->
+<!--     maxNum = 500, -->
+<!--     sigMethod = "fdr", -->
+<!--     fdrMethod = "BH", -->
+<!--     fdrThr = cutoff, -->
+<!--     topThr = 10000, -->
+
+<!--     saveRawGseaResult = F, -->
+<!--     isOutput = F -->
+<!-- ) -->
+<!-- } -->
+
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- GSEA_BP <- GSEA_call_BP(gene_df) -->
+
+<!-- GSEA_MF <- GSEA_call_MF(gene_df) -->
+
+<!-- GSEA_KEGG <- GSEA_call_KEGG(gene_df) -->
+
+<!-- GSEA_Hall <- GSEA_call_Hall(gene_df) -->
+
+
+<!-- GSEABP_path <- file.path(normalizePath(outputdir_SEQ), "GSEA_BP.png") -->
+<!-- GSEAMF_path <- file.path(normalizePath(outputdir_SEQ), "GSEA_MF.png") -->
+<!-- GSEAKEGG_path <- file.path(normalizePath(outputdir_SEQ), "GSEA_KEGG.png") -->
+<!-- GSEAHall_path <- file.path(normalizePath(outputdir_SEQ), "GSEA_Hallmarks.png") -->
+
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- GSEA_BP_plot <- ggplot(GSEA_BP, aes(x = normalizedEnrichmentScore, y = reorder(description, normalizedEnrichmentScore), size = size, color = -log10(FDR))) + -->
+<!--   geom_point()+ -->
+<!--   scale_color_gradient( -->
+<!--     low = "blue", high = "red" -->
+<!--   ) + -->
+<!--   scale_size(range = c(3,10)) + -->
+<!--   theme_bw() + -->
+<!--   labs( -->
+<!--     title = "GSEA Biological Processes", -->
+<!--     x = "Normalized Enrichment Score", -->
+<!--     y = "Biological Processes", -->
+<!--     size = "Gene count", -->
+<!--     color = "FDR" -->
+<!--   ) -->
+
+
+<!-- GSEA_MF_plot <- ggplot(GSEA_MF, aes(x = normalizedEnrichmentScore, y = reorder(description, normalizedEnrichmentScore), size = size, color = -log10(FDR))) + -->
+<!--   geom_point()+ -->
+<!--   scale_color_gradient( -->
+<!--     low = "blue", high = "red" -->
+<!--   ) + -->
+<!--   scale_size(range = c(3,10)) + -->
+<!--   theme_bw() + -->
+<!--   labs( -->
+<!--     title = "GSEA Molecular Function", -->
+<!--     x = "Normalized Enrichment Score", -->
+<!--     y = "Molecular Function", -->
+<!--     size = "Gene count", -->
+<!--     color = "FDR" -->
+<!--   ) -->
+
+<!-- GSEA_KEGG_plot <- ggplot(GSEA_KEGG, aes(x = normalizedEnrichmentScore, y = reorder(description, normalizedEnrichmentScore), size = size, color = -log10(FDR))) + -->
+<!--   geom_point()+ -->
+<!--   scale_color_gradient( -->
+<!--     low = "blue", high = "red" -->
+<!--   ) + -->
+<!--   scale_size(range = c(3,10)) + -->
+<!--   theme_bw() + -->
+<!--   labs( -->
+<!--     title = "GSEA KEGG", -->
+<!--     x = "Normalized Enrichment Score", -->
+<!--     y = "KEGG", -->
+<!--     size = "Gene count", -->
+<!--     color = "FDR" -->
+<!--   ) -->
+
+<!-- GSEA_Hall_plot <- ggplot(GSEA_Hall, aes(x = normalizedEnrichmentScore, y = reorder(description, normalizedEnrichmentScore), size = size, color = -log10(FDR))) + -->
+<!--   geom_point()+ -->
+<!--   scale_color_gradient( -->
+<!--     low = "blue", high = "red" -->
+<!--   ) + -->
+<!--   scale_size(range = c(3,10)) + -->
+<!--   theme_bw() + -->
+<!--   labs( -->
+<!--     title = "GSEA Hallmarks 50", -->
+<!--     x = "Normalized Enrichment Score", -->
+<!--     y = "Hallmarks", -->
+<!--     size = "Gene count", -->
+<!--     color = "FDR" -->
+<!--   ) -->
+<!-- ggsave(GSEABP_path, plot = GSEA_BP, width = 4, height = 3, dpi = 300) -->
+<!-- ggsave(GSEAMF_path, plot = GSEA_MF, width = 8, height = 6, dpi = 300) -->
+<!-- ggsave(GSEAKEGG_path, plot = GSEA_KEGG, width = 8, height = 6, dpi = 300) -->
+<!-- ggsave(GSEAHall_path, plot = GSEA_Hall, width = 8, height = 6, dpi = 300) -->
+
+
+<!-- GSEA_BP_plot -->
+<!-- GSEA_MF_plot -->
+<!-- GSEA_KEGG_plot -->
+<!-- GSEA_Hall_plot -->
+<!-- ``` -->
+<!-- ```{r} -->
+
+<!-- library(fgsea) -->
+<!-- library(ggplot2) -->
+
+<!-- output_seqGSEA <- file.path(outputdir_SEQ_GSEA, "GSEA_BP.pdf") -->
+
+<!-- pdf(output_seqGSEA, width = 6, height = 5)  # width/height in inches -->
+
+<!-- top_sets <- GSEA_BP[1:10, ] -->
+
+<!-- for (i in seq_len(nrow(top_sets))) { -->
+
+<!--     geneset <- strsplit(top_sets$leadingEdgeId[i], ";")[[1]] -->
+<!--     geneset <- intersect(geneset, names(gene_list)) -->
+
+<!--     if (length(geneset) < 5) { -->
+<!--         message("Skipping: ", top_sets$description[i]) -->
+<!--         next -->
+<!--     } -->
+
+<!--     # Create GSEA plot -->
+<!--     p <- plotEnrichment(geneset, gene_list) + -->
+<!--         ggtitle(paste0( -->
+<!--             top_sets$description[i], -->
+<!--             "\nNES = ", round(top_sets$normalizedEnrichmentScore[i], 2), -->
+<!--             ", FDR = ", signif(top_sets$FDR[i], 2) -->
+<!--         )) -->
+
+<!--     # Print to PDF (each print() = new page) -->
+<!--     print(p) -->
+<!-- } -->
+
+<!-- dev.off() -->
+
+<!-- message("PDF saved to: ", output_seqGSEA) -->
+
+<!-- #MF GSEA -->
+<!-- output_seqGSEA <- file.path(outputdir_SEQ_GSEA, "GSEA_MF.pdf") -->
+
+<!-- pdf(output_seqGSEA, width = 6, height = 5)  # width/height in inches -->
+
+<!-- top_sets <- GSEA_MF[1:10, ] -->
+
+<!-- for (i in seq_len(nrow(top_sets))) { -->
+
+<!--     geneset <- strsplit(top_sets$leadingEdgeId[i], ";")[[1]] -->
+<!--     geneset <- intersect(geneset, names(gene_list)) -->
+
+<!--     if (length(geneset) < 5) { -->
+<!--         message("Skipping: ", top_sets$description[i]) -->
+<!--         next -->
+<!--     } -->
+
+<!--     # Create GSEA plot -->
+<!--     p <- plotEnrichment(geneset, gene_list) + -->
+<!--         ggtitle(paste0( -->
+<!--             top_sets$description[i], -->
+<!--             "\nNES = ", round(top_sets$normalizedEnrichmentScore[i], 2), -->
+<!--             ", FDR = ", signif(top_sets$FDR[i], 2) -->
+<!--         )) -->
+
+<!--     # Print to PDF (each print() = new page) -->
+<!--     print(p) -->
+<!-- } -->
+
+<!-- dev.off() -->
+
+<!-- message("PDF saved to: ", output_seqGSEA) -->
+
+<!-- #KEGG GSEA -->
+<!-- output_seqGSEA <- file.path(outputdir_SEQ_GSEA, "GSEA_KEGG.pdf") -->
+
+<!-- pdf(output_seqGSEA, width = 6, height = 5)  # width/height in inches -->
+
+<!-- top_sets <- GSEA_KEGG[1:10, ] -->
+
+<!-- for (i in seq_len(nrow(top_sets))) { -->
+
+<!--     geneset <- strsplit(top_sets$leadingEdgeId[i], ";")[[1]] -->
+<!--     geneset <- intersect(geneset, names(gene_list)) -->
+
+<!--     if (length(geneset) < 5) { -->
+<!--         message("Skipping: ", top_sets$description[i]) -->
+<!--         next -->
+<!--     } -->
+
+<!--     # Create GSEA plot -->
+<!--     p <- plotEnrichment(geneset, gene_list) + -->
+<!--         ggtitle(paste0( -->
+<!--             top_sets$description[i], -->
+<!--             "\nNES = ", round(top_sets$normalizedEnrichmentScore[i], 2), -->
+<!--             ", FDR = ", signif(top_sets$FDR[i], 2) -->
+<!--         )) -->
+
+<!--     # Print to PDF (each print() = new page) -->
+<!--     print(p) -->
+<!-- } -->
+
+<!-- dev.off() -->
+
+<!-- message("PDF saved to: ", output_seqGSEA) -->
+
+<!-- #Hallmarks50 GSEA -->
+<!-- output_seqGSEA <- file.path(outputdir_SEQ_GSEA, "GSEA_Hall.pdf") -->
+
+<!-- pdf(output_seqGSEA, width = 6, height = 5)  # width/height in inches -->
+
+<!-- top_sets <- GSEA_Hall[1:10, ] -->
+
+<!-- for (i in seq_len(nrow(top_sets))) { -->
+
+<!--     geneset <- strsplit(top_sets$leadingEdgeId[i], ";")[[1]] -->
+<!--     geneset <- intersect(geneset, names(gene_list)) -->
+
+<!--     if (length(geneset) < 5) { -->
+<!--         message("Skipping: ", top_sets$description[i]) -->
+<!--         next -->
+<!--     } -->
+
+<!--     # Create GSEA plot -->
+<!--     p <- plotEnrichment(geneset, gene_list) + -->
+<!--         ggtitle(paste0( -->
+<!--             top_sets$description[i], -->
+<!--             "\nNES = ", round(top_sets$normalizedEnrichmentScore[i], 2), -->
+<!--             ", FDR = ", signif(top_sets$FDR[i], 2) -->
+<!--         )) -->
+
+<!--     # Print to PDF (each print() = new page) -->
+<!--     print(p) -->
+<!-- } -->
+
+<!-- dev.off() -->
+
+<!-- message("PDF saved to: ", output_seqGSEA) -->
+<!-- ``` -->
