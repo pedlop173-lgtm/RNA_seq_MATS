@@ -3084,7 +3084,7 @@ library(AnnotationDbi)
 
 res_raw <- DESeq2::results(dds)
 
-res_raw = lfcShrink(dds, contrast = c("Group","KD","Ctrl"), type = "ashr")
+# res_raw = lfcShrink(dds, contrast = c("Group","KD","Ctrl"), type = "ashr")
 
 res_raw$ENSEMBL <- gsub("\\..*", "", rownames(res_raw))
 
@@ -3704,9 +3704,14 @@ KD_reps <- rep(KD_reps, each = 1)
 Ungrp_ctrl <- c("ctrl") %>% paste0(ctrl_reps)
 Ungrp_KD <- c("KD") %>% paste0(KD_reps)
 
-Ungrp = c(Ungrp_ctrl, Ungrp_KD)
+
 
 bams_docked <- sub(".*/", "/bams/", gg.bams)
+Ungrp = if(grepl(perturbation,bams_docked[1])){
+  c(Ungrp_KD ,Ungrp_ctrl)
+} else{
+  c(Ungrp_ctrl, Ungrp_KD)
+}
 bams.tsv <-  data.frame(group = Ungrp, bams = bams_docked, colorsK = colors_key )
 #fixed /bams/... issue with bams.tsv output
 write_tsv(bams.tsv, file.path(outputdir_base, "gg_bams.tsv"))
@@ -3729,38 +3734,80 @@ bam_tsv_name <- str_split_i(bam_tsv, pattern = "/", -1)
 
 cmd <- "docker"
 
+# for(i in seq_along(DEseq_regions)){
+#   region <- DEseq_regions[i]
+#   gene_name <- Seq_genes[i]
+#   
+#   safe_region <- gsub("[:\\-]", "_", region)
+#   safe_name <- paste0(i, "_",safe_region, "_", gene_name)
+#   print(safe_name)
+#   docker_args <- list(
+#   c("run", "--rm"),
+#   c("-v", paste0(normalizePath(outputdir_base), "/:/tsv")),
+#   c("-v", paste0(normalizePath(gtf1_path), "/:/gtf")),
+#   c("-v", paste0(normalizePath(BAM_files), "/:/bams")),
+#   c("-v", paste0(normalizePath(outputdir_SEQ_allsashimi), "/:/out")),
+#   c("-w", "/out"),
+#   "guigolab/ggsashimi",
+#   c("-b", paste0("/tsv/", bam_tsv_name)),
+#   c("-c", region),
+#   c("-g", paste0("/gtf/", gtf_name)),
+#   c("-o", safe_name),
+#   c("-C", "3"),
+#   c("-M", "5000"),
+#   "--fix-y-scale"
+# )
+# 
+# 
+#   
+#   tryCatch( 
+#     system2(cmd, args = unlist(docker_args),stdout = TRUE, stderr = TRUE),
+#     error = function(e){
+#       message("Failed region: ", region)
+#     }
+#   )
+# }
+
+
 for(i in seq_along(DEseq_regions)){
   region <- DEseq_regions[i]
   gene_name <- Seq_genes[i]
   
   safe_region <- gsub("[:\\-]", "_", region)
-  safe_name <- paste0(i, "_",safe_region, "_", gene_name)
-  print(safe_name)
+  safe_name <- paste0(i, "_", safe_region, "_", gene_name)
+
   docker_args <- list(
-  c("run", "--rm"),
-  c("-v", paste0(normalizePath(outputdir_base), "/:/tsv")),
-  c("-v", paste0(normalizePath(gtf1_path), "/:/gtf")),
-  c("-v", paste0(normalizePath(BAM_files), "/:/bams")),
-  c("-v", paste0(normalizePath(outputdir_SEQ_allsashimi), "/:/out")),
-  c("-w", "/out"),
-  "guigolab/ggsashimi",
-  c("-b", paste0("/tsv/", bam_tsv_name)),
-  c("-c", region),
-  c("-g", paste0("/gtf/", gtf_name)),
-  c("-o", safe_name),
-  c("-C", "3"),
-  c("-M", "5000"),
-  "--fix-y-scale"
-)
+    c("run", "--rm"),
+    c("-v", paste0(normalizePath(outputdir_base), "/:/tsv")),
+    c("-v", paste0(normalizePath(gtf1_path), "/:/gtf")),
+    c("-v", paste0(normalizePath(BAM_files), "/:/bams")),
+    c("-v", paste0(normalizePath(outputdir_SEQ_allsashimi), "/:/out")),
+    c("-w", "/out"),
+    "guigolab/ggsashimi",
+    c("-b", paste0("/tsv/", bam_tsv_name)),
+    c("-c", region),
+    c("-g", paste0("/gtf/", gtf_name)),
+    c("-o", safe_name),
+    c("-C", "3"),
+    c("-M", "5000"),
+    "--fix-y-scale"
+  )
 
-
-  
-  tryCatch( 
-    system2(cmd, args = unlist(docker_args),stdout = TRUE, stderr = TRUE),
+  result <- tryCatch(
+    system2(cmd, args = unlist(docker_args), stdout = TRUE, stderr = TRUE),
     error = function(e){
-      message("Failed region: ", region)
+      message("R-level launch error for ", safe_name, ": ", e$message)
+      NULL
     }
   )
+
+  status <- attr(result, "status")
+  if (!is.null(status) && status != 0) {
+    message("Docker FAILED for ", safe_name, " (region: ", region, ", exit status ", status, "):")
+    cat(result, sep = "\n")
+  } else {
+    message("OK: ", safe_name)
+  }
 }
   
 
