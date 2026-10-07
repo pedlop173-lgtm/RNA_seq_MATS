@@ -1,0 +1,175 @@
+---
+title: "RNASeq_loop"
+output: html_document
+date: "2026-05-14"
+---
+
+
+## Packages to install and use ==> FIXES REQUIRED
+```{r, echo=T, message=F, warning=F} 
+if (!require("BiocManager", quietly = TRUE))
+install.packages("BiocManager")
+
+pkg <- c('tidyverse', "gplots", "RColorBrewer", "pheatmap", "ggplot2",
+  "calibrate", "ashr", 'apeglm', "DESeq2", "dplyr", "TCGAbiolinks", "AnnotationDbi",
+  "ReportingTools", "clusterProfiler", "enrichplot", "pathview", "gage", "gageData", "Select", "limma", "org.Hs.eg.db", "org.Mm.eg.db","Rsubread", "stringr", "openxlsx", "IOBR", "mygene", "pdftools")
+
+if(pkg %in% rownames(installed.packages())){
+  message("all necessary packages installed")
+}else{
+
+BiocManager::install(pkg, update = T, ask = FALSE, force = F)
+}
+# loading
+library(TCGAbiolinks)
+library(dplyr)
+library(DESeq2)
+library(apeglm)
+library(ashr)
+library(calibrate)
+library(ggplot2)
+library(pheatmap)
+library(RColorBrewer)
+library(gplots)
+library(tidyverse)
+library(readxl)
+library(AnnotationDbi)
+library(ReportingTools)
+library(GO.db)
+library(GOstats)
+library(pathview)
+library(gage)
+library(gageData)
+library(Select)
+library(limma)
+library(org.Hs.eg.db)
+library(Rsubread)
+library(stringr)
+library(openxlsx)
+library(IOBR)
+library(gtools)
+library(pdftools)
+library(org.Mm.eg.db)
+library(WebGestaltR)
+library(tidyverse)
+```
+
+#setup number of runs 
+
+```{r}
+
+Run_nums <- as.numeric(readline(prompt = "How many runs to execute?: "))
+
+
+Initials <- readline(prompt = "Enter your initials: ")
+
+Seq_date <- readline(prompt = "Enter date of RNAseq: ")
+
+#set organism for genome
+org <- (tolower(readline(prompt = "What organism is the RNAseq from? ")))
+
+gtf.path <- rstudioapi::selectFile(caption = "select .gtf file used for alignment", path = "/media/bree")
+
+counts_runner <- as.logical(readline(prompt = "Do you want to generate read count matrix? (T or F) "))
+
+outputdir <- rstudioapi::selectDirectory(caption = "Select folder for path generation", path = "/media/bree")
+
+
+if(counts_runner == F){
+  counts_matrix <- rstudioapi::selectFile(caption = "select counts matrix excel file")
+}
+
+rMATS_runner <- as.logical(readline(prompt = "Do you want to run rMATS? (T or F) "))
+
+if(rMATS_runner == F){
+  MATS.path <- rstudioapi::selectDirectory(caption = "select rMATS output folder from previous run")
+}
+
+cell_line <- c()
+perturbation <- c()
+# Replicates <- c()
+BAM_files <- c()
+dir_name <- c()
+for(i in 1:Run_nums){
+cell_line[i] <- readline(prompt = "Enter cell line: ")
+
+perturbation[i] <- readline(prompt = "Enter perturbation of cell line: ")
+
+# Replicates[i] <- readline(prompt = "Enter number of biological replicates: ")
+
+BAM_files[i] <- rstudioapi::selectDirectory(caption = "select folder with all BAM files", path = "/media/bree")
+
+dir_name[i] <- paste0(Initials, "_",cell_line[i], "_", perturbation[i])
+}
+
+#generate data table out of vectors generated above
+prompt_List <- list(
+  Cell_line <- cell_line,
+  Perturbation <- perturbation,
+  # replicates <- Replicates,
+  bam_files <- BAM_files,
+  Dir_name <- dir_name
+)
+prompts_table <- data.table::copy(prompt_List) %>% as.data.frame()
+
+colnames(prompts_table) <- c("cell_line", "perturbation", "BAM_files", "dir_name")
+
+
+
+Start = Sys.time()
+
+gtf <- read.delim(
+  gtf.path,
+  header = FALSE,
+  comment.char = "#",
+  stringsAsFactors = FALSE,
+)
+
+End = Sys.time()
+print(End - Start)
+colnames(gtf) <- c(
+  "chr","source","feature","start","end",
+  "score","strand","frame","attribute"
+)
+
+
+```
+
+
+```{r run_children, results='asis'}
+
+for(i in 1:nrow(prompts_table)) {
+
+  knitr::knit_code$restore()
+knitr:::chunk_counter(reset = TRUE)
+  
+  run_info <- prompts_table[i, ]
+
+  # assign variables for child
+  cell_line <- run_info$cell_line
+  perturbation <- run_info$perturbation
+  # Replicates <- run_info$Replicates
+  BAM_files <- run_info$BAM_files
+  dir_name <- run_info$dir_name
+  counts_runner <- counts_runner
+  rMATS_runner <- rMATS_runner
+  gtf <- gtf
+  outputdir <- outputdir
+  org <- org
+
+  # pass shared objects too
+  env <- environment()
+
+  knitr::opts_knit$set(unnamed.chunk.label = paste0("child", i, "-chunk"))
+
+  
+  knitr::knit_child(
+    "~/RNA_seq_MATS/BulkRNASeqpipeline.Rmd",
+    envir = env,
+    quiet = TRUE
+  ) |>
+    cat(sep = "\n")
+}
+```
+
+

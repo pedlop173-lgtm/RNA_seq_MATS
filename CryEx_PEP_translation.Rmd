@@ -1,0 +1,1046 @@
+---
+title: "CryEX_PEP_translation"
+author: "Pedro Lopez"
+date: "2026-08-27"
+output: html_document
+---
+
+```{r}
+packages_list = c("Rcpp", "installr","tidyverse", "purrr", "magrittr", "ggplot2","readxl", "Hmisc", "gplots", "dplyr",
+                  "stringr", "data.table", "gtsummary", "tidyr", "writexl", "openxlsx", "BiocManager")
+
+BioC_pckgs_list = c("BSgenome.Hsapiens.UCSC.hg38", "ensembldb", "EnsDb.Hsapiens.v110", "AnnotationHub")
+
+######
+#Check if all required packages are installed
+######
+
+sapply(packages_list, function(x){
+  if(x %in% rownames(installed.packages()) == F){
+    install.packages(x)
+  }else{
+    print(paste(x, "already installed", sep = " "))
+  }
+})
+
+sapply(BioC_pckgs_list, function(x){
+  if(x %in% rownames(installed.packages()) == F){
+    BiocManager::install(x)
+  }else{
+    print(paste("BioCpckg", x, "already installed", sep = " "))
+  }
+})
+
+
+# install.packages("Rcpp", type = "binary")
+# install.packages("installr")
+# install.packages("tidyverse", type = "binary")
+# install.packages("purrr")
+# install.packages("magrittr")
+# install.packages("ggplot2")
+# install.packages("readxl")
+# install.packages("Hmisc")
+# install.packages("gplots")
+# install.packages("dplyr")
+# install.packages("stringr")
+# install.packages("data.table")
+# install.packages("gtsummary")
+# install.packages("tidyr")
+# install.packages("writexl")
+# install.packages("openxlsx", type = "binary")
+# install.packages("BiocManager")
+# BiocManager::install("BSgenome.Hsapiens.UCSC.hg38")
+# BiocManager::install("ensembldb")
+# BiocManager::install("EnsDb.Hsapiens.v110")
+# BiocManager::install("AnnotationHub")
+
+
+
+
+library(Rcpp)
+library(purrr)
+library(installr)
+library(tidyverse)
+library(magrittr)
+library(ggplot2)
+library(readxl)
+library(Hmisc)
+library(gplots)
+library(dplyr)
+library(stringr)
+library(data.table)
+library(gtsummary)
+library(tidyr)
+library(writexl)
+library(openxlsx)
+library(BiocManager)
+library(GenomicRanges)
+library(GenomicFeatures)
+library(Biostrings)
+library(AnnotationHub)
+library(ensembldb)
+library(BSgenome.Hsapiens.UCSC.hg38)
+library(rtracklayer)
+# library(EnsDb.Hsapiens.v84) #compatable with genode.v24.primary_assembly.annotation.gtf---not true need to find workaround 9/9/26
+
+
+```
+#outputdir setup
+```{r}
+#########
+#run info
+#########
+run_date = readline(prompt = "enter date of code run: ")
+cell_line = readline(prompt = "enter cell line: ")
+perturbation = readline(prompt = "enter perturbation: ")
+initials = readline(prompt = "who generated the samples? (enter initials): ")
+
+
+dir_name = paste(initials, cell_line, perturbation, sep = "_")
+
+######
+#Output Directory selection
+######
+
+outputdir <- rstudioapi::selectDirectory(caption = "select folder for path generation", path = "/media/bree")
+outputdir_base <- normalizePath(file.path(outputdir, paste0(run_date,"_CryEX_PEP_translated_",dir_name)), mustWork = FALSE)
+if(!dir.exists(outputdir_base)){
+dir.create(outputdir_base, recursive = TRUE, showWarnings = FALSE)
+}
+
+```
+
+#Read CryEX table
+```{r}
+##########
+#Excel (and specific sheet) input selection
+##########
+cryEx_path<- rstudioapi::selectFile(caption = "select desired RNAseq sheet to analyse", path = "/media/bree")
+sheet_names = excel_sheets(cryEx_path)
+
+print(sheet_names)
+sheet_select  = select.list(sheet_names, title = "select sheet to analyze:")
+# clipr::clear_clip()
+# cryEx_table <- clipr::write_clip(cryEx_table)
+# cryEx_table_path <- clipr::read_clip()
+# cryEx_table_path <- gsub('^"|"$', '', cryEx_table)
+cryEx_table <- read_excel(cryEx_path, sheet = sheet_select) %>% as.data.frame()
+
+cryEx_table = cryEx_table %>%
+  mutate(ENSG = sub(".*gene_id (ENSG[0-9.]+);.*", "\\1",Attribute), .before = chrom)
+
+```
+
+
+```{r}
+# full_cryEx = read_tsv("~/Downloads/LM2_CrypticEvents.tsv")
+# 
+# og_cryEX_cols = colnames(cryEx_table)
+# og_cryEX_cols = og_cryEX_cols[1:(length(og_cryEX_cols)-1)]
+# og_cryEX_cols = og_cryEX_cols[-c(17:18)]
+# og_cryEX_cols
+# og_idx = which(colnames(cryEx_table) %in% og_cryEX_cols)
+# og_idx
+# ncol(cryEx_table)
+# sum(colnames(cryEx_table[,og_idx]) == og_cryEX_cols)
+# 
+# 
+# full_idx = which(colnames(full_cryEx) %in% og_cryEX_cols)
+# full_idx
+# og_cryEX_cols
+# colnames(full_cryEx[,full_idx])
+# 
+# cryEx_table = cryEx_table %>%
+#   mutate(merge_key = do.call(paste0, cryEx_table[,og_idx]))
+# 
+# full_cryEx = full_cryEx %>%
+#   mutate(merge_key = do.call(paste0, full_cryEx[,full_idx]))
+# 
+# full_cryEx_newcols <- setdiff(colnames(full_cryEx), c(og_cryEX_cols))  # keep merge_key + whatever's unique to full_cryEx
+# 
+# cryEx_table_fixed <- left_join(
+#   cryEx_table,
+#   full_cryEx[, full_cryEx_newcols],
+#   by = "merge_key"
+# )
+# 
+# full_cryEx_dedup <- full_cryEx %>%
+#   distinct(merge_key, .keep_all = TRUE)
+# 
+# cryEx_table_fixed <- left_join(cryEx_table, full_cryEx_dedup[, full_cryEx_newcols], by = "merge_key")
+# wb = createWorkbook()
+# addWorksheet(wb, "cryEx_FIXED")
+# writeData(wb, "cryEx_FIXED", cryEx_table_fixed)
+# saveWorkbook(wb, "~/Downloads/LM2_CrypticEvents_FIXED.xlsx", overwrite = T)
+# # 
+# # # cryEx_table_fixed = left_join(cryEx_table, full_cryEx[,c(full_idx, 31)], by = "merge_key")
+# 
+# 
+# 
+# string_A = "chr125230561752305788+chr12:52305617-52305788first_exonchr12:52305617-52305788:+52287629,523628870.7520.22FALSE0.22-0.22KD-CTRL0.11,0.08,0.1,1.0,0.11.0,0.22,0.28204030761856236185623411719230.973chr12
+# "
+# string_B = ""
+# 
+# row_a <- cryEx_table[cryEx_table$merge_key == string_A, og_cryEX_cols]
+# row_b <- full_cryEx[full_cryEx$merge_key == string_B, og_cryEX_cols]
+# 
+# mapply(function(x, y) x == y, row_a, row_b)
+```
+
+
+#AnnotationHub annotation method
+```{r}
+# library(BSgenome.Hsapiens.UCSC.hg38)
+# ah = AnnotationHub()
+# genome <- BSgenome.Hsapiens.UCSC.hg38
+# edb <-ah[["AH119325"]]
+# 
+# tx <- transcripts(edb, columns = c("gene_id", "tx_id", "tx_support_level", "tx_is_canonical", "gene_name" ,"protein_sequence","gene_biotype", "description", "tx_biotype"))
+# tx_canon <- tx[tx$tx_is_canonical == TRUE, ] %>% as.data.table()
+# 
+# 
+# 
+# flanklen = 45 #15 amino acids  will use this to check against protein_sequence for RF determination 260203
+# 
+# #minpeptidelength = 14 #8 is for HLA purposes but can be changed if desired
+# min_aa_len <- flanklen/3-1
+# 
+# #fix flanking junction (right side) shift -> comes from bash extract from IGV to original excel spreadsheet [260109]
+# cryEx_table$flanking_jxns <- sapply(cryEx_table$flanking_jxns, function(x){
+#   flank_split <- strsplit(x, ":")[[1]]
+#   nums <- as.integer(flank_split)
+#   nums[2] <- nums[2] + 1
+#   paste(nums, collapse = ":")
+# })
+# 
+# attach(cryEx_table)
+# 
+# n_cry <- nrow(cryEx_table)
+# n_rows <- n_cry * 3
+# 
+# pepcolnames <- c(
+#   "CryEx_row","Coords","Flanking","Strand","Frame",
+#   "Name","True_pep","RF_check","True_RF","Peptide", "Novel_true" ,"Length"
+# )
+# 
+# peptable <- as.data.frame(
+#   matrix(nrow = n_rows, ncol = length(pepcolnames)),
+#   stringsAsFactors = FALSE
+# )
+# colnames(peptable) <- pepcolnames
+# 
+# peptable$CryEx_row <- rep(seq_len(n_cry), each = 3)
+# peptable$Frame     <- rep(c(0,1,2), times = n_cry)
+# peptable$Coords    <- rep(cryEx_table$coords, each = 3)
+# peptable$Flanking  <- rep(cryEx_table$flanking_jxns, each = 3)
+# peptable$Strand    <- rep(cryEx_table$strand, each = 3)
+# peptable$Name      <- rep(cryEx_table$GENCODE_GeneName, each = 3)
+```
+
+
+
+#Experimental--CDS exons and gtf-mediated annotation
+```{r}
+# ah <- AnnotationHub()
+# 
+# library(BSgenome.Hsapiens.UCSC.hg38)
+genome <- BSgenome.Hsapiens.UCSC.hg38
+# edb <-ah[["AH119325"]]
+# 
+# tx <- transcripts(edb, columns = c("gene_id", "tx_id", "tx_support_level", "tx_is_canonical", "gene_name" ,"protein_sequence","gene_biotype", "description", "tx_biotype"))
+# tx_canon <- tx[tx$tx_is_canonical == TRUE, ] %>% as.data.table()
+
+
+
+library(GenomicFeatures)
+gencode_protein = rstudioapi::selectFile(caption = "select gencode protein FASTA file", path = "/media/bree/")
+
+
+library(Biostrings)
+
+gencode_protein <- readAAStringSet(gencode_protein)
+gencode_protein
+
+header_split <- strsplit(names(gencode_protein), "\\|")
+
+fasta_table <- data.frame(
+  ENSP          = sapply(header_split, `[`, 1),
+  ENST          = sapply(header_split, `[`, 2),
+  ENSG          = sapply(header_split, `[`, 3),
+  OTTHUMG       = sapply(header_split, `[`, 4),
+  OTTHUMT       = sapply(header_split, `[`, 5),
+  transcript_name = sapply(header_split, `[`, 6),
+  gene_name     = sapply(header_split, `[`, 7),
+  length_aa     = sapply(header_split, `[`, 8),
+  sequence      = as.character(gencode_protein),
+  stringsAsFactors = FALSE
+)
+
+# gencode_protein = read.delim(gencode_protein, header = F, sep = "\t")
+# 
+# gencode_protein_ids = which(grepl(pattern = ">", gencode_protein$V1))
+# gencode_protein_seq = which(!grepl(pattern = ">", gencode_protein$V1))
+
+# gencode_AAseq = data.frame(protein_ids = gencode_protein$V1[gencode_protein_ids], protein_seq = gencode_protein$V1[gencode_protein_seq])
+
+# #fix carrot at beginning of protein_ids
+# gencode_AAseq = gencode_AAseq %>%
+#   mutate(protein_ids = substr(protein_ids, 2, nchar(protein_ids))) %>%
+#   mutate(ENSP = str_split_i(protein_ids, "\\|", 1)) %>%
+#   mutate(ENST = str_split_i(protein_ids, "\\|", 2)) %>%
+#   mutate(ENSG = str_split_i(protein_ids, "\\|", 3)) %>%
+#   mutate(OTTHUMG = str_split_i(protein_ids, "\\|", 4)) %>%
+#   mutate(OTTHUMT = str_split_i(protein_ids, "\\|", 5)) %>%
+#   mutate(transcript_name = str_split_i(protein_ids, "\\|", 6)) %>%
+#   mutate(gene_symbol = str_split_i(protein_ids, "\\|", 7)) %>%
+#   mutate(gene_width = str_split_i(protein_ids, "\\|", 8))
+
+
+
+gtf = rstudioapi::selectFile(caption = "select GTF file used for bam alignment", path = "/media/bree/")
+
+txdb = makeTxDbFromGFF(gtf, format = "gtf")
+
+txdb
+
+gtf_og = import(gtf, format = "gtf")
+
+gtf_full = as.data.frame(gtf_og)
+
+start_gtf = gtf_og[gtf_og$type == "start_codon"]
+
+start_codon_annotation = as.data.frame(start_gtf)
+
+tx_gtf = gtf_og[ gtf_og$type == "transcript"]
+
+
+# utr_gtf = gtf_og[gtf_og$type == "UTR"]
+
+colnames(mcols(tx_gtf))
+
+cds_gtf = cdsBy(txdb, by = "tx", use.names = T)
+
+exon_annotation = as.data.frame(cds_gtf)
+
+# Keep only chromosomes/contigs represented in the BSgenome object
+primary_chr <- c(
+    paste0("chr", 1:22),
+    "chrX",
+    "chrY"
+)
+
+cds_primary <- keepSeqlevels(
+    cds_gtf,
+    primary_chr,
+    pruning.mode = "coarse"
+)
+
+cds_seq = extractTranscriptSeqs(genome, cds_primary)
+
+protein_seq = translate(cds_seq)
+
+
+tx_info = as.data.table(tx_gtf)
+
+tx_info = unique(
+  tx_info[, .(
+    gene_id,
+    gene_name,
+    transcript_id,
+    transcript_name,
+    gene_type,
+    transcript_type,
+    level,
+    transcript_support_level,
+    tag
+  )]
+)
+
+# tx_UTR = as.data.table(utr_gtf)
+
+# tx_UTR = unique(
+#   tx_UTR[, .(
+#     gene_id,
+#     gene_name,
+#     seqnames,
+#     start,
+#     end,
+#     width,
+#     strand,
+#     frame,
+#     transcript_id,
+#     transcript_name,
+#     gene_type,
+#     transcript_type,
+#     level,
+#     transcript_support_level,
+#     tag
+#   )]
+# )
+
+gene_row = match(exon_annotation$group_name, tx_info$transcript_id)
+
+gene_list = c()
+for(i in 1:length(gene_row)){
+  gene_list[i] = tx_info$gene_name[gene_row[i]]
+}
+
+ENSG_row = match(exon_annotation$group_name, tx_info$transcript_id)
+
+ENSG_list = c()
+for(i in 1:length(ENSG_row)){
+  ENSG_list[i] = tx_info$gene_id[ENSG_row[i]]
+}
+
+exon_annotation = exon_annotation %>%
+  mutate(gene_symbol = gene_list, .before = "group_name") %>%
+  mutate(ENSG = ENSG_list, .before = "seqnames")
+
+####################
+#full gene aa sequences generated by GTF file
+####################
+protein_dt = data.table(transcript_id = names(protein_seq), protein_sequence = as.character(protein_seq))
+
+# cds_dt = data.table(transcript_id = names(cds_primary), CDS = cds_gtf_primary)
+
+tx_proteins = merge(tx_info, protein_dt, by = "transcript_id", all.x = T)
+#filter tx_proteins by CCDS (tag); transcript_support_level == 1; transcript_type == "protein_coding"
+
+# tx_proteins = tx_proteins %>%
+#   dplyr::filter(transcript_type == "protein_coding" & transcript_support_level == 1 & tag == "CCDS") ==> omit for now 260929...keeping backup aa seq larger to account for more CryEX events
+
+flanklen = 45 #15 amino acids  will use this to check against protein_sequence for RF determination 260203
+
+#minpeptidelength = 14 #8 is for HLA purposes but can be changed if desired
+min_aa_len <- flanklen/3-1
+
+
+attach(cryEx_table)
+
+n_cry <- nrow(cryEx_table)
+n_rows <- n_cry * 3
+
+pepcolnames <- c(
+  "CryEx_row","Coords","Flanking","Strand","Frame",
+  "Name", "ENST","True_pep","RF_check","True_RF","Peptide", "Novel_true" ,"Length"
+)
+
+peptable <- as.data.frame(
+  matrix(nrow = n_rows, ncol = length(pepcolnames)),
+  stringsAsFactors = FALSE
+)
+colnames(peptable) <- pepcolnames
+
+peptable$CryEx_row <- rep(seq_len(n_cry), each = 3)
+peptable$Cryex_key = rep(cryEx_table$Attribute, each = 3)
+peptable$Frame     <- rep(c(0,1,2), times = n_cry)
+peptable$Coords    <- rep(cryEx_table$coords, each = 3)
+peptable$Flanking  <- rep(cryEx_table$flanking_jxns, each = 3)
+peptable$Strand    <- rep(cryEx_table$strand, each = 3)
+peptable$Name      <- rep(cryEx_table$GENCODE_GeneName, each = 3)
+peptable$ENST <- rep(cryEx_table$ENST, each = 3)
+
+```
+
+#up_jxn/dwn_jxn matching 
+```{r}
+up_jxn = c()
+dwn_jxn = c()
+# jxn_match_up = c()
+exon_num = c()
+ENST = c()
+chr_up = c()
+start_up = c()
+end_up = c()
+start_dwn = c()
+end_dwn = c()
+dupes = c()
+gene_symbol_chk = c()
+closest_match = c()
+close_name = c()
+matched = c()
+
+
+jxn_idx_pos_up = c()
+jxn_idx_pos_dwn = c()
+
+cds_startExtreme = c()
+#CryEX_upstreamofCDS = c()
+
+start_transcripts_pos = start_codon_annotation %>%
+        dplyr::group_by(gene_ENSG = start_codon_annotation$gene_id) %>% summarise(pos_start = min(start))
+
+
+start_transcripts_neg = start_codon_annotation %>%
+        dplyr::group_by(gene_ENSG = start_codon_annotation$gene_id) %>% summarise(neg_start = max(end))
+      
+
+for(i in seq_len(nrow(cryEx_table))){
+  tryCatch({
+  
+  strand_chk = cryEx_table$strand[i]
+  jxn = cryEx_table$flanking_jxns[i]
+  
+  
+  if(strand_chk == "+"){
+    up_jxn[i] = as.integer(str_split_i(jxn, ",", 1)) # ":" for v24 and "," for v38 cryEx outputs???
+    dwn_jxn[i] = as.integer(str_split_i(jxn, ",", 2)) + 1
+    
+    jxn_idx_pos_up[i] = which.min(abs(exon_annotation$end - up_jxn[i]))
+    jxn_idx_pos_dwn[i] = which.min(abs(exon_annotation$start - dwn_jxn[i]))
+    
+    thing <- up_jxn[jxn_idx_pos_up]
+    things <- which(exon_annotation$end == thing)
+    
+    ENSG_CryEx = cryEx_table$ENSG[i]
+    
+    if(ENSG_CryEx == exon_annotation$ENSG[jxn_idx_pos_up[1]]){
+    #jxn_match_up = match(up_jxn[i], exon_annotation$end)
+    exon_num[i] = exon_annotation$exon_rank[jxn_idx_pos_up[1]]
+    ENST[i] = exon_annotation$group_name[jxn_idx_pos_up[1]]
+    chr_up[i] = exon_annotation$seqnames[jxn_idx_pos_up[1]]
+    start_up[i] = exon_annotation$start[jxn_idx_pos_up[1]]
+    end_up[i] = exon_annotation$end[jxn_idx_pos_up[1]]
+    dupes[i] = sum(up_jxn[i] %in% exon_annotation$end)
+    gene_symbol_chk[i] = exon_annotation$gene_symbol[jxn_idx_pos_up[1]]
+    closest_match[i] = exon_annotation$end[jxn_idx_pos_up[1]]
+    close_name[i] = exon_annotation$gene_symbol[jxn_idx_pos_up[1]]
+    matched [i] = "T"
+
+    start_dwn[i] = exon_annotation$start[jxn_idx_pos_dwn[1]]
+    end_dwn[i] = exon_annotation$end[jxn_idx_pos_dwn[1]]
+    # cds_startExtreme[i] = "NA"
+    
+    }else{
+      exon_num[i] = "NA"
+      ENST[i] = "NA"
+      chr_up[i] = "NA"
+      start_up[i] = "NA"
+      end_up[i] = "NA"
+      dupes[i] = "NA"
+      gene_symbol_chk[i] = "NA"
+      closest_match[i] = "NA"
+      close_name[i] = "NA"
+      matched[i] = "F::Check UTRs or lncRNA"
+      start_dwn[i] = "NA"
+      end_dwn[i] = "NA"
+      
+      # if((start_transcripts_pos$gene_ENSG %in% cryEx_table$ENSG[i]) == T){
+      # cds_startExtreme[i] = as.integer(start_transcripts_pos$pos_start[which(start_transcripts_pos$gene_ENSG == cryEx_table$ENSG[i])])
+      # }else if(("start_codon" %in% (gtf_full$type[which(gtf_full$gene_id == cryEx_table$ENSG[i])])) == F ){
+      #   cds_startExtreme[i] = "no_start_codon_in_GTF!"
+      # }else{
+      #   cds_startExtreme[i] = "ERROR"
+      # }
+      
+      match_idx <- which(start_transcripts_pos$gene_ENSG == cryEx_table$ENSG[i])
+
+if(length(match_idx) > 0){
+  cds_startExtreme[i] = as.integer(start_transcripts_neg$neg_start[which(start_transcripts_neg$gene_ENSG == cryEx_table$ENSG[i])])
+}else if(!("start_codon" %in% gtf_full$type[which(gtf_full$gene_id == cryEx_table$ENSG[i])])){
+  cds_startExtreme[i] = "no_start_codon_in_GTF!"
+}else{
+  cds_startExtreme[i] = "ERROR"
+}
+    }
+  }else if(strand_chk == "-"){
+    up_jxn[i] = as.integer(str_split_i(jxn, ",", 2)) + 1
+    dwn_jxn[i] = as.integer(str_split_i(jxn, ",", 1))
+    
+    jxn_idx_neg_up[i] = which.min(abs(exon_annotation$start - up_jxn[i]))
+    jxn_idx_neg_dwn[i] = which.min(abs(exon_annotation$end - dwn_jxn[i]))
+    
+    ENSG_CryEx = cryEx_table$ENSG[i]
+    
+    thing <- up_jxn[jxn_idx_neg_up]
+    things <- which(exon_annotation$start ==thing)
+    
+    if(ENSG_CryEx == exon_annotation$ENSG[jxn_idx_neg_up[1]]){
+    # jxn_match_up = match(up_jxn[i], exon_annotation$start)
+    exon_num[i] = exon_annotation$exon_rank[jxn_idx_neg_up[1]]
+    ENST[i] = exon_annotation$group_name[jxn_idx_neg_up[1]]
+    chr_up[i] = exon_annotation$seqnames[jxn_idx_neg_up[1]]
+    start_up[i] = exon_annotation$start[jxn_idx_neg_up[1]]
+    end_up[i] = exon_annotation$end[jxn_idx_neg_up[1]]
+    dupes[i] = sum(up_jxn[i] %in% exon_annotation$start)
+    gene_symbol_chk[i] = exon_annotation$gene_symbol[jxn_idx_neg_up[1]]
+    closest_match[i] = exon_annotation$start[jxn_idx_neg_up[1]]
+    close_name[i] = exon_annotation$gene_symbol[jxn_idx_neg_up[1]]
+    matched [i] = "T"
+    # CryEX_upstreamofCDS[i] = "FALSE"
+    
+    start_dwn[i] = exon_annotation$start[jxn_idx_neg_dwn[1]]
+    end_dwn[i] = exon_annotation$end[jxn_idx_neg_dwn[1]]
+      
+    }else{
+      exon_num[i] = "NA"
+      ENST[i] = "NA"
+      chr_up[i] = "NA"
+      start_up[i] = "NA"
+      end_up[i] = "NA"
+      dupes[i] = "NA"
+      gene_symbol_chk[i] = "NA"
+      closest_match[i] = "NA"
+      close_name[i] = "NA"
+      matched[i] = "F::Check UTRs or lncRNA"
+      start_dwn[i] = "NA"
+      end_dwn[i] = "NA"
+      
+      # if((start_transcripts_neg$gene_ENSG %in% cryEx_table$ENSG[i]) == T){
+      # cds_startExtreme[i] = as.integer(start_transcripts_neg$neg_start[which(start_transcripts_neg$gene_ENSG == cryEx_table$ENSG[i])])
+      #   }else if(("start_codon" %in% (gtf_full$type[which(gtf_full$gene_id == cryEx_table$ENSG[i])])) == F ){
+      #     cds_startExtreme[i] = "no_start_codon_in_GTF!"
+      #   }else{
+      #   cds_startExtreme[i] = "ERROR"
+      #   }
+      
+      match_idx <- which(start_transcripts_neg$gene_ENSG == cryEx_table$ENSG[i])
+
+if(length(match_idx) > 0){
+  cds_startExtreme[i] = as.integer(start_transcripts_neg$neg_start[match_idx])
+}else if(!("start_codon" %in% gtf_full$type[which(gtf_full$gene_id == cryEx_table$ENSG[i])])){
+  cds_startExtreme[i] = "no_start_codon_in_GTF!"
+}else{
+  cds_startExtreme[i] = "ERROR"
+}
+
+      }
+    }
+  },
+  error = function(e){
+    message("Error at iteration i = ", i)
+  
+  })
+}
+
+# cryEx_table$GENCODE_GeneName[17]
+# view(start_transcripts)
+# sum((start_codon_annotation$transcript_name == cryEx_table$GENCODE_GeneName[17]) == T)
+# 
+# start_transcripts = start_codon_annotation %>%
+#         dplyr::group_by(gene_symbol = start_codon_annotation$gene_name) %>% summarise(neg_start = max(end))
+#       
+#       # max_start = max(start_transcripts$end)
+# start_chk = which(start_transcripts$`start_codon_annotation$gene_name` == cryEx_table$GENCODE_GeneName[17])
+#       
+#        if(cryEx_table$start[17] > start_transcripts$neg_start[start_chk]){
+#       CryEX_upstreamofCDS[i] = "CryEX_upstream_ofCDS"
+#     }else{
+#       CryEX_upstreamofCDS[i] = "ERROR"
+#     }
+
+
+cryEx_table$gene_symbol_chk = gene_symbol_chk
+cryEx_table$up_jxn = up_jxn
+cryEx_table$ENST = ENST
+cryEx_table$exon_num = exon_num
+cryEx_table$chr_up = chr_up
+cryEx_table$start_up = as.integer(start_up)
+cryEx_table$end_up = as.integer(end_up)
+cryEx_table$dupes = dupes
+cryEx_table$ENST = ENST
+cryEx_table$close_match = closest_match
+cryEx_table$close_name = close_name
+cryEx_table$matched = matched
+cryEx_table$start_dwn = as.integer(start_dwn)
+cryEx_table$end_dwn = as.integer(end_dwn)
+cryEx_table$cds_startExtreme = cds_startExtreme
+
+cryEx_table = cryEx_table %>%
+  mutate(perfect_match = ifelse(close_match == up_jxn, "TRUE", "FALSE"))
+
+
+ upstreamOFcds = c()
+for(i in seq_len(nrow(cryEx_table))){
+  strand <- cryEx_table$strand[i]
+  cds_val <- cryEx_table$cds_startExtreme[i]
+  
+  if(is.na(cds_val)){
+    upstreamOFcds[i] <- "NA"
+  } else if(cds_val == "no_start_codon_in_GTF!"){
+    upstreamOFcds[i] <- "--"
+  } else if(strand == "+"){
+    upstreamOFcds[i] <- if(as.integer(cds_val) > as.integer(cryEx_table$end[i])) "TRUE" else "FALSE"
+  } else if(strand == "-"){
+    upstreamOFcds[i] <- if(as.integer(cds_val) < as.integer(cryEx_table$start[i])) "TRUE" else "FALSE"
+  }
+}
+
+cryEx_table$Upstream_ofCDS = upstreamOFcds
+
+#fix flanking junction (right side) shift -> comes from bash extract from IGV to original excel spreadsheet [260109]
+# cryEx_table$flanking_jxns <- sapply(cryEx_table$flanking_jxns, function(x){
+#   flank_split <- strsplit(x, ",")[[1]]
+#   nums <- as.integer(flank_split)
+#   nums[2] <- nums[2] + 1
+#   paste(nums, collapse = ",")
+# })
+```
+
+#RF_check --- Find true reading frame
+```{r}
+
+############
+#Peptable/tx_proteins gene symbol match mapping
+############
+#Match ENST and use gencode protein FASTA file seq first and manual gtf gen second
+genPep_row <- match(peptable$ENST, fasta_table$ENST)
+gtf_row <- match(peptable$ENST, tx_proteins$transcript_id)
+
+True_pep = c()
+for(i in 1:length(peptable$ENST)){
+  if(!is.na(genPep_row[i]) == T){
+    True_pep[i] = fasta_table$protein_seq[genPep_row[i]]
+  }else if(!is.na(gtf_row[i]) == T){
+    True_pep[i] = tx_proteins$protein_sequence[gtf_row[i]]
+  }else{
+    True_pep[i] = "no_reference_seq_available"
+  }
+}
+
+peptable$True_pep = True_pep
+############# peptable$True_pep <- tx_proteins$protein_sequence[genome_row] ==> old version updated 260930
+
+#################
+#construct aa sequence of flanking exons to check against true aa sequence to find true RF
+#################
+
+upstream_jxnAA <- character(n_rows)
+
+# idx <- 1
+for (rown in seq_len(n_cry)) {
+  
+  # jx <- as.integer(strsplit(cryEx_table$flanking_jxns[rown], ":")[[1]])
+  strand <- cryEx_table$strand[rown]
+  start_chk = cryEx_table$start_up[rown]
+  
+  # if (strand == "+") {
+  #   start_pos <- cryEx_table$start_up[rown]  #jx[1] - flanklen + 1
+  #   end_pos   <- cryEx_table$end_up[rown]  #jx
+  # } else {
+  #   start_pos <- cryEx_table$start_up[rown]  #jx[2]
+  #   end_pos   <- cryEx_table$end_up[rown] #jx[2] + flanklen - 1 + 1
+  # }
+  
+  if(!is.na(start_chk) == T){
+    start_pos <- cryEx_table$start_up[rown]
+    end_pos   <- cryEx_table$end_up[rown]
+  
+  
+  interval <- GRanges(
+    seqnames = cryEx_table$chrom[rown],
+    ranges   = IRanges(start = start_pos, end = end_pos),
+    strand   = strand
+  )
+  
+  dna <- if (strand == "+") {
+    paste(getSeq(genome, interval), collapse = "")
+  } else {
+    paste(rev(getSeq(genome, interval)), collapse = "")
+  }
+  
+  rf <- c(
+    strsplit(as.character(translate(DNAString(dna))), "\\*")[[1]][1],
+    strsplit(as.character(translate(DNAString(substr(dna,2,nchar(dna))))), "\\*")[[1]][1],
+    strsplit(as.character(translate(DNAString(substr(dna,3,nchar(dna))))), "\\*")[[1]][1]
+  )
+  }else{
+    rf <- c(
+      "NA",
+      "NA",
+      "NA"
+    )
+  }
+  # RF_check[idx:(idx+2)] <- rf
+  # idx <- idx + 3
+  
+  upstream_jxnAA[(3*(rown-1) + 1):(3*rown)] <- rf
+}
+
+# upstream_jxnAA_fixed = c()
+# for(i in 1:length(upstream_jxnAA)){
+#   if(upstream_jxnAA[i] >= 3){
+#     upstream_jxnAA_fixed[i] = substr(upstream_jxnAA[i], 2, nchar(upstream_jxnAA[i]))
+#   }else{
+#     upstream_jxnAA_fixed[i] = upstream_jxnAA[i]
+#   }
+# }
+
+peptable$upstream_jxnAA <- upstream_jxnAA
+
+
+stopifnot(nrow(peptable) == length(peptable$upstream_jxnAA))
+
+
+```
+
+
+#7aa in upstream flankEx check
+```{r}
+#checking 7aa in upstream flanking exon
+True_RF <- character(n_rows)
+
+for (i in seq_len(n_rows)) {
+  
+  chk <- peptable$upstream_jxnAA[i]
+  tp  <- peptable$True_pep[i]
+  up_cds = which(peptable$ENST[i] == cryEx_table$ENST)
+  #CLEAN THIS UP 261001
+  if (is.na(chk) || is.na(tp) || chk == "") {
+    True_RF[i] <- "no reference aa"
+  } else if (nchar(chk) < 15) {
+    True_RF[i] <- "FALSE"
+  } else if (grepl(str_sub(chk, 2 , nchar(chk) - 1), tp, fixed = TRUE)) {
+    True_RF[i] <- "TRUE"
+  }  else {
+    True_RF[i] <- "FALSE"
+  }
+}
+
+peptable$True_RF <- True_RF
+
+stopifnot(nrow(peptable) == length(peptable$True_RF))
+
+```
+
+#Full aa seq (all)
+```{r}
+Peptide <- character(n_rows)
+
+# idx <- 1
+for (rown in seq_len(n_cry)) {
+  
+  # jx <- as.integer(strsplit(cryEx_table$flanking_jxns[rown], ":")[[1]]) ==> old version updated 260930
+  strand <- cryEx_table$strand[rown]
+  start_up = cryEx_table$start_up[rown]
+  # end_up = cryEx_table$end_up[rown]
+  # start_dwn = cryEx_table$start_dwn[rown]
+  # end_dwn = cryEx_table$end_dwn[rown]
+  
+  if(!is.na(start_up) == T){
+  interval <- GRanges(
+    seqnames = cryEx_table$chrom[rown],
+    ranges = IRanges(
+      start = c(cryEx_table$start_up[rown], cryEx_table$start[rown], cryEx_table$start_dwn[rown]),
+      end   = c(cryEx_table$end_up[rown], cryEx_table$end[rown], cryEx_table$end_dwn[rown])
+    ),
+    strand = strand
+  )
+  
+  # dna <- if (strand == "+") {
+  #   paste(getSeq(genome, interval), collapse = "")
+  # } else {
+  #   paste(rev(getSeq(genome, interval)), collapse = "")
+  # }
+  
+  dna = paste(getSeq(genome, interval), collapse = "")
+  
+  pep <- c(
+    strsplit(as.character(translate(DNAString(dna))), "\\*")[[1]][1],
+    strsplit(as.character(translate(DNAString(substr(dna,2,nchar(dna))))), "\\*")[[1]][1],
+    strsplit(as.character(translate(DNAString(substr(dna,3,nchar(dna))))), "\\*")[[1]][1]
+  )
+  }else{
+    pep = c(
+      "NA",
+      "NA",
+      "NA"
+    )
+  }
+   Peptide[(3*(rown-1) + 1):(3*rown)] <- pep
+  
+}
+
+peptable$Peptide <- Peptide
+peptable$Length  <- nchar(peptable$Peptide)
+
+
+stopifnot(nrow(peptable) == length(peptable$Peptide))
+
+```
+
+
+#translate downstream exon to check for readthrough
+```{r}
+#check right flanking exon aa sequence for novel readthroughs
+
+# peptable <- peptable %>% mutate(NovelRead_check = str_sub( Peptide , -14), .before = Novel_true )
+# 
+# Novel_true <- character(n_rows)
+# 
+# 
+# for (i in seq_len(n_rows)) {
+#   
+#   chk <- peptable$NovelRead_check[i]
+#   tp  <- peptable$True_pep[i]
+#   upstm <- peptable$RF_check[i]
+#   trslPep <- peptable$Peptide[i]
+#   
+#   if (is.na(chk) || is.na(tp) || chk == "") {
+#     Novel_true[i] <- "no reference aa"
+#   } else if (nchar(chk) < min_aa_len || grepl(chk, upstm, fixed = TRUE) || nchar(trslPep) <= flanklen/3*2-1) {
+#     Novel_true[i] <- "FALSE"
+#   } else if (grepl(chk, tp, fixed = TRUE)) {
+#     Novel_true[i] <- "TRUE"
+#   } else {
+#     Novel_true[i] <- "FALSE"
+#   }
+# }
+# 
+# peptable$Novel_true <- Novel_true
+# 
+# stopifnot(all(table(peptable$Frame) == n_cry))
+# 
+# peptable <- peptable %>%
+#   separate(Coords, into = c("chr", "range"), sep = ":", remove = FALSE) %>%
+#   separate(range, into = c("start", "end"), sep = "-", convert = TRUE) %>%
+#   mutate(cry_lengthDiv3 = (end + 1 - start)/3)   #cryptic length divided by 3 (+1 added to include last nuc)
+# 
+# #peptable = peptable[peptable$Length >= minpeptidelength,]
+# peptable$UniqueID=1:dim(peptable)[1] 
+```
+
+#review table
+```{r}
+final_table = data.table(
+  True_reading_frames = sum(peptable$True_RF == "TRUE", na.rm = T),
+  no_start_codon = (sum(cryEx_table$cds_startExtreme == "no_start_codon_in_GTF!", na.rm = T)*3),
+  upstream_ofCDS = (sum(cryEx_table$Upstream_ofCDS == "TRUE", na.rm = T)*3),
+  ERROR = (sum(cryEx_table$Upstream_ofCDS == "FALSE", na.rm = T)*3),
+  False_reading_frames = (sum(peptable$True_RF %in% c("FALSE", "no reference aa"), na.rm = T) - (sum(cryEx_table$Upstream_ofCDS == "TRUE", na.rm = T) + sum(cryEx_table$Upstream_ofCDS == "FALSE", na.rm = T) + sum(cryEx_table$cds_startExtreme == "no_start_codon_in_GTF!", na.rm = T))*3),
+  total_events = nrow(peptable)
+)
+
+#Relative to CryEX outputs
+final_table = data.table(
+  
+  
+  TRUE_reading_frames = sum(peptable$True_RF == "TRUE", na.rm = T),
+  False_reading_frames = sum()
+  Total = nrow(cryEx_table)
+)
+```
+
+#Create WB
+```{r}
+##########
+#Start WB and make unfilt Peptable
+#########
+wb <-createWorkbook()
+addWorksheet(wb, "peptable" )
+writeData(wb, "peptable", peptable)
+
+pep_name = file.path(outputdir_base, paste(initials, cell_line, perturbation, "peptable.xlsx", sep = "_" ))
+saveWorkbook(wb, file = pep_name, overwrite = TRUE)
+
+#yellow fill == full readthrough cryptic exon
+Yellow <- createStyle(fgFill = "yellow")
+#Blue fill == downstream contitutive exon matches ref aa (TRUE)
+Blue <- createStyle(fgFill = "lightblue")
+
+cryLeng.list <- as.list(peptable$cry_lengthDiv3)
+Length.list <- as.list(peptable$Length)
+Novel.list <- as.list(peptable$Novel_true)
+
+lapply(seq_along(cryLeng.list), function(i){
+  if(cryLeng.list[[i]] == Length.list[[i]] - (flanklen/3*2)){
+    addStyle(wb, sheet = "peptable" ,style = Yellow, rows = i + 1, cols = 1:14 ,gridExpand = TRUE)
+  }
+})
+
+lapply(seq_along(cryLeng.list), function(i){
+  if(cryLeng.list[[i]] == Length.list[[i]] - (flanklen/3*2)-1){
+    addStyle(wb, sheet = "peptable" ,style = Yellow, rows = i + 1, cols = 1:14 ,gridExpand = TRUE)
+  }
+})
+
+lapply(seq_along(Novel.list), function(i){
+  if(Novel.list[[i]] == "TRUE"){
+    addStyle(wb, sheet = "peptable", style = Blue, rows = i + 1, cols = 15, gridExpand = TRUE)
+  }
+})
+pep_filterd <- peptable %>% dplyr::filter(peptable$True_RF == "TRUE")
+
+filtered_cryLeng.list <- as.list(pep_filterd$cry_lengthDiv3)
+filtered_Length.list <- as.list(pep_filterd$Length)
+filtered_Novel.list <- as.list(pep_filterd$Novel_true)
+
+addWorksheet(wb, "peptable_filtered")
+writeData(wb, "peptable_filtered", pep_filterd)
+
+lapply(seq_along(filtered_cryLeng.list), function(i){
+  if(filtered_cryLeng.list[[i]] == filtered_Length.list[[i]] - (flanklen/3*2)){
+    addStyle(wb, sheet = "peptable_filtered" ,style = Yellow, rows = i + 1, cols = 1:14 ,gridExpand = TRUE)
+  }
+})
+
+
+lapply(seq_along(filtered_cryLeng.list), function(i){
+  if(filtered_cryLeng.list[[i]] == filtered_Length.list[[i]] - (flanklen/3*2-1)){
+    addStyle(wb, sheet = "peptable_filtered" ,style = Yellow, rows = i + 1, cols = 1:14 ,gridExpand = TRUE)
+  }
+})
+
+lapply(seq_along(filtered_Novel.list), function(i){
+  if(filtered_Novel.list[[i]] == "TRUE"){
+    addStyle(wb, sheet = "peptable_filtered", style = Blue, rows = i + 1, cols = 15, gridExpand = TRUE)
+  }
+})
+
+
+
+#########
+#aa sequence highlighting for easier upstream exon aa matching
+#########
+
+# upstream_jxnMatch = createStyle(
+#   fontColour = "green",
+#   textDecoration = "bold"
+# )
+# 
+# CryEx_style = createStyle(
+#   fontColour = "orange"
+# )
+# 
+# downstream_jxnStyle = createStyle(
+#   fontColour = "darkred"
+# )
+
+
+# upstream_jxnList = peptable$upstream_jxnAA
+# 
+# downstream_jxnStyle = peptable$NovelRead_check
+
+saveWorkbook(wb, file = pep_name, overwrite = TRUE)
+
+```
+
+#FASTA conversion
+```{r}
+UniquePep = distinct(pep_filterd, Peptide, .keep_all = T)
+
+UniquePep = substr(UniquePep$Peptide, 8, nchar(UniquePep$Peptide) - 7)
+
+n_unique = nrow(UniquePep)
+
+# for(rown in seq_len(n_unique)) {
+#   
+# }
+
+pep_FASTA = file.path(outputdir_base, paste(initials, cell_line, perturbation, "pep_translated_FASTA.fq", sep = "_"))
+
+if(file.exists(pep_FASTA)) {
+  unlink(pep_FASTA)
+}
+
+fileConn = file(pep_FASTA, "a")
+
+for(i in 1:dim(UniquePep)[1]){
+  header = paste(">", UniquePep$name[i], sep = "")
+  writeLines(header, fileConn)
+  writeLines(UniquePep[i,]$Peptide, fileConn)
+}
+
+close(fileConn)
+
+```

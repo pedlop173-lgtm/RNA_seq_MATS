@@ -422,7 +422,7 @@ clustering_distance_cols=sampleDists ,annotation_col = annoCol,
 filename = heat_path,
 width = 8,
 height = 10)
-heat_map
+# heat_map
 
 ```
 
@@ -449,12 +449,20 @@ pheatmap(sampleDistMatrix, cluster_rows = T, cluster_columns = T,
 ```{r}
 library(ggplot2)
 # rld = rlog(dds)
-PCA <- plotPCA(vstdata, intgroup = "Group", ntop = 2000)
-pca_path <- file.path(normalizePath(outputdir_SEQ), "PCA_plot.png")
-# ggsave(pca_path, plot = PCA, width = 8, height = 6, dpi = 300)
-ggsave(pca_path, plot = PCA, width = 12, height = 4, dpi = 300, 
+PCA <- plotPCA(vstdata, intgroup = "Group", ntop = 2000, returnData = T)
+PCA2 <- plotPCA(vstdata, intgroup = "Group", ntop = 2000)
+pca_path1 <- file.path(normalizePath(outputdir_SEQ), "PCA_plot.png")
+
+pca_path2 <- file.path(normalizePath(outputdir_SEQ), "PCA_plot_names.png")
+
+PCA_ploted = ggplot(PCA, aes(x=PC1, y=PC2, color=Group)) +
+    geom_point(size=1) + geom_text(aes(label=name), vjust=-0.5, hjust=0.5,size=2.3,show.legend=FALSE) +scale_color_hue(direction = -1) + ggtitle(paste("Ctrl", "vs", perturbation, sep = "_"))+ theme(plot.title = element_text(hjust = 0.5))
+
+ggsave(pca_path1, plot = PCA2, width = 12, height = 4, dpi = 300, device = grDevices::png)
+ggsave(pca_path2, plot = PCA_ploted, width = 12, height = 4, dpi = 300, 
        device = grDevices::png)
-PCA
+# PCA_ploted
+
 ```
 
 
@@ -516,7 +524,7 @@ head(res)
  # ggsave(l2f_path, plot = l2f, width = 8, height = 6, dpi = 300)
  ggsave(l2f_path, plot = l2f, width = 12, height = 4, dpi = 300, 
        device = grDevices::png)
- l2f
+ # l2f
 ```
 
 
@@ -531,7 +539,7 @@ sigHeatDWN_path <- file.path(normalizePath(outputdir_SEQ), "HeatsigGene_down.png
 # ggsave(sigHeatDWN_path, plot = sigHDWN, width = 8, height = 6, dpi = 300)
 ggsave(sigHeatDWN_path, plot = sigHDWN, width = 12, height = 4, dpi = 300, 
        device = grDevices::png)
-sigHDWN
+# sigHDWN
 ```
 
 ## Generate Heatmap of all Significant DE Genes with p-value <0.05 and
@@ -545,12 +553,8 @@ sigHeatUP_path <- file.path(normalizePath(outputdir_SEQ), "HeatsigGene_up.png")
 # ggsave(sigHeatUP_path, plot = sigHUP, width = 8, height = 6, dpi = 300)
 ggsave(sigHeatUP_path, plot = sigHUP, width = 12, height = 4, dpi = 300, 
        device = grDevices::png)
-sigHUP
+# sigHUP
 ```
-#print out list of genes that are siginificantly different from Ctrl to KD
-
-
-
 #Generate TPM data frame from counts matrix
 ```{r}
 rownames(counts_mat) <- gsub("\\..*", "", rownames(counts_mat))
@@ -599,7 +603,7 @@ saveWorkbook(wb, file = outfile, overwrite = TRUE)
 ```{r}
 #make sheet with filters for cutoffs of DESEq2 output
 res_df_padj <- res_df %>%
-  filter(padj < 0.05)
+  dplyr::filter(padj < 0.05)
 if("FDR_0.05" %in% names(wb)){
   print("updatding current worksheet")
 }else{
@@ -609,7 +613,7 @@ writeData(wb, "FDR_0.05", res_df_padj)
 saveWorkbook(wb, file = outfile, overwrite = TRUE)
 
 res_df_allfilt <- res_df_padj %>%
-  filter(abs(log2FoldChange) >= 1 )
+  dplyr::filter(abs(log2FoldChange) >= 1 )
 
 gene_info <- getGenes(geneids = res_df_allfilt$ENSEMBL, fields = "summary") 
 gene_deduped <- gene_info[which(!duplicated(gene_info$query)),]
@@ -1193,7 +1197,7 @@ writeData(wb_GOredund, "UP_MF_noRedund", up_MF)
   writeData(wb_GOredund, "UP_MF_noRedund_list", GO_bp_symbols)
   # saveWorkbook(wb_GOredund, file = paste0(outputdir_SEQ, "/", cell_line, "_ORA_lists.xlsx"), overwrite = T)
 
-  print(up_MF_plot)
+  # print(up_MF_plot)
 }
 
 down_MF <- no_web_call_MF(genes_sig_down)
