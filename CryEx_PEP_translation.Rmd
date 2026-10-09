@@ -9,7 +9,7 @@ output: html_document
 packages_list = c("Rcpp", "installr","tidyverse", "purrr", "magrittr", "ggplot2","readxl", "Hmisc", "gplots", "dplyr",
                   "stringr", "data.table", "gtsummary", "tidyr", "writexl", "openxlsx", "BiocManager")
 
-BioC_pckgs_list = c("BSgenome.Hsapiens.UCSC.hg38", "ensembldb", "EnsDb.Hsapiens.v110", "AnnotationHub")
+BioC_pckgs_list = c("BSgenome.Hsapiens.UCSC.hg38", "ensembldb", "EnsDb.Hsapiens.v110", "AnnotationHub", "GenomicFeatures", "GenomicRanges", "rtracklayer", "txdbmaker")
 
 ######
 #Check if all required packages are installed
@@ -81,6 +81,7 @@ library(AnnotationHub)
 library(ensembldb)
 library(BSgenome.Hsapiens.UCSC.hg38)
 library(rtracklayer)
+library(txdbmaker)
 # library(EnsDb.Hsapiens.v84) #compatable with genode.v24.primary_assembly.annotation.gtf---not true need to find workaround 9/9/26
 
 
@@ -414,32 +415,6 @@ flanklen = 45 #15 amino acids  will use this to check against protein_sequence f
 #minpeptidelength = 14 #8 is for HLA purposes but can be changed if desired
 min_aa_len <- flanklen/3-1
 
-
-attach(cryEx_table)
-
-n_cry <- nrow(cryEx_table)
-n_rows <- n_cry * 3
-
-pepcolnames <- c(
-  "CryEx_row","Coords","Flanking","Strand","Frame",
-  "Name", "ENST","True_pep","RF_check","True_RF","Peptide", "Novel_true" ,"Length"
-)
-
-peptable <- as.data.frame(
-  matrix(nrow = n_rows, ncol = length(pepcolnames)),
-  stringsAsFactors = FALSE
-)
-colnames(peptable) <- pepcolnames
-
-peptable$CryEx_row <- rep(seq_len(n_cry), each = 3)
-peptable$Cryex_key = rep(cryEx_table$Attribute, each = 3)
-peptable$Frame     <- rep(c(0,1,2), times = n_cry)
-peptable$Coords    <- rep(cryEx_table$coords, each = 3)
-peptable$Flanking  <- rep(cryEx_table$flanking_jxns, each = 3)
-peptable$Strand    <- rep(cryEx_table$strand, each = 3)
-peptable$Name      <- rep(cryEx_table$GENCODE_GeneName, each = 3)
-peptable$ENST <- rep(cryEx_table$ENST, each = 3)
-
 ```
 
 #up_jxn/dwn_jxn matching 
@@ -464,8 +439,13 @@ matched = c()
 jxn_idx_pos_up = c()
 jxn_idx_pos_dwn = c()
 
+jxn_idx_neg_up = c()
+jxn_idx_neg_dwn = c()
+
 cds_startExtreme = c()
 #CryEX_upstreamofCDS = c()
+
+error_chk = c()
 
 start_transcripts_pos = start_codon_annotation %>%
         dplyr::group_by(gene_ENSG = start_codon_annotation$gene_id) %>% summarise(pos_start = min(start))
@@ -486,11 +466,11 @@ for(i in seq_len(nrow(cryEx_table))){
     up_jxn[i] = as.integer(str_split_i(jxn, ",", 1)) # ":" for v24 and "," for v38 cryEx outputs???
     dwn_jxn[i] = as.integer(str_split_i(jxn, ",", 2)) + 1
     
-    jxn_idx_pos_up[i] = which.min(abs(exon_annotation$end - up_jxn[i]))
-    jxn_idx_pos_dwn[i] = which.min(abs(exon_annotation$start - dwn_jxn[i]))
+    jxn_idx_pos_up = which.min(abs(exon_annotation$end - up_jxn[i]))
+    jxn_idx_pos_dwn = which.min(abs(exon_annotation$start - dwn_jxn[i]))
     
-    thing <- up_jxn[jxn_idx_pos_up]
-    things <- which(exon_annotation$end == thing)
+    # thing <- up_jxn[jxn_idx_pos_up]
+    # things <- which(exon_annotation$end == thing)
     
     ENSG_CryEx = cryEx_table$ENSG[i]
     
@@ -509,7 +489,7 @@ for(i in seq_len(nrow(cryEx_table))){
 
     start_dwn[i] = exon_annotation$start[jxn_idx_pos_dwn[1]]
     end_dwn[i] = exon_annotation$end[jxn_idx_pos_dwn[1]]
-    # cds_startExtreme[i] = "NA"
+    cds_startExtreme[i] = "NA"
     
     }else{
       exon_num[i] = "NA"
@@ -547,13 +527,13 @@ if(length(match_idx) > 0){
     up_jxn[i] = as.integer(str_split_i(jxn, ",", 2)) + 1
     dwn_jxn[i] = as.integer(str_split_i(jxn, ",", 1))
     
-    jxn_idx_neg_up[i] = which.min(abs(exon_annotation$start - up_jxn[i]))
-    jxn_idx_neg_dwn[i] = which.min(abs(exon_annotation$end - dwn_jxn[i]))
+    jxn_idx_neg_up = which.min(abs(exon_annotation$start - up_jxn[i]))
+    jxn_idx_neg_dwn = which.min(abs(exon_annotation$end - dwn_jxn[i]))
     
     ENSG_CryEx = cryEx_table$ENSG[i]
     
-    thing <- up_jxn[jxn_idx_neg_up]
-    things <- which(exon_annotation$start ==thing)
+    # thing <- up_jxn[jxn_idx_neg_up]
+    # things <- which(exon_annotation$start ==thing)
     
     if(ENSG_CryEx == exon_annotation$ENSG[jxn_idx_neg_up[1]]){
     # jxn_match_up = match(up_jxn[i], exon_annotation$start)
@@ -567,7 +547,7 @@ if(length(match_idx) > 0){
     closest_match[i] = exon_annotation$start[jxn_idx_neg_up[1]]
     close_name[i] = exon_annotation$gene_symbol[jxn_idx_neg_up[1]]
     matched [i] = "T"
-    # CryEX_upstreamofCDS[i] = "FALSE"
+    cds_startExtreme[i] = "FALSE"
     
     start_dwn[i] = exon_annotation$start[jxn_idx_neg_dwn[1]]
     end_dwn[i] = exon_annotation$end[jxn_idx_neg_dwn[1]]
@@ -609,8 +589,7 @@ if(length(match_idx) > 0){
   },
   error = function(e){
     message("Error at iteration i = ", i)
-  
-  })
+    })
 }
 
 # cryEx_table$GENCODE_GeneName[17]
@@ -644,7 +623,7 @@ cryEx_table$close_name = close_name
 cryEx_table$matched = matched
 cryEx_table$start_dwn = as.integer(start_dwn)
 cryEx_table$end_dwn = as.integer(end_dwn)
-cryEx_table$cds_startExtreme = cds_startExtreme
+cryEx_table$cds_startExtreme = as.integer(cds_startExtreme)
 
 cryEx_table = cryEx_table %>%
   mutate(perfect_match = ifelse(close_match == up_jxn, "TRUE", "FALSE"))
@@ -669,12 +648,46 @@ for(i in seq_len(nrow(cryEx_table))){
 cryEx_table$Upstream_ofCDS = upstreamOFcds
 
 #fix flanking junction (right side) shift -> comes from bash extract from IGV to original excel spreadsheet [260109]
-# cryEx_table$flanking_jxns <- sapply(cryEx_table$flanking_jxns, function(x){
-#   flank_split <- strsplit(x, ",")[[1]]
-#   nums <- as.integer(flank_split)
-#   nums[2] <- nums[2] + 1
-#   paste(nums, collapse = ",")
-# })
+cryEx_table$flanking_jxns <- sapply(cryEx_table$flanking_jxns, function(x){
+  # flank_split <- strsplit(x, ",")[[1]] --> old vers from chatgpt doesn't seem to work;; updated 261007
+  # nums <- as.integer(flank_split)
+  # nums[2] <- nums[2] + 1
+  # paste(nums, collapse = ",")
+  flank_good = str_split_i(x, ",", 1) %>% as.integer()
+  flank_wack = str_split_i(x, ",", 2) %>% as.integer()
+  flank_fixed = flank_wack + 1
+  
+  paste(flank_good, flank_fixed, collapse = ",")
+  
+})
+```
+
+#peptable construct (dirty)
+```{r}
+attach(cryEx_table)
+
+n_cry <- nrow(cryEx_table)
+n_rows <- n_cry * 3
+
+pepcolnames <- c(
+  "CryEx_row","Coords","Flanking","Strand","Frame",
+  "Name", "ENST","True_pep","True_RF","Peptide" ,"Length"
+)
+
+peptable <- as.data.frame(
+  matrix(nrow = n_rows, ncol = length(pepcolnames)),
+  stringsAsFactors = FALSE
+)
+colnames(peptable) <- pepcolnames
+
+peptable$CryEx_row <- rep(seq_len(n_cry), each = 3)
+peptable$Cryex_key = rep(cryEx_table$Attribute, each = 3)
+peptable$Frame     <- rep(c(0,1,2), times = n_cry)
+peptable$Coords    <- rep(cryEx_table$coords, each = 3)
+peptable$Flanking  <- rep(cryEx_table$flanking_jxns, each = 3)
+peptable$Strand    <- rep(cryEx_table$strand, each = 3)
+peptable$Name      <- rep(cryEx_table$GENCODE_GeneName, each = 3)
+peptable$ENST <- rep(cryEx_table$ENST, each = 3)
 ```
 
 #RF_check --- Find true reading frame
@@ -690,7 +703,7 @@ gtf_row <- match(peptable$ENST, tx_proteins$transcript_id)
 True_pep = c()
 for(i in 1:length(peptable$ENST)){
   if(!is.na(genPep_row[i]) == T){
-    True_pep[i] = fasta_table$protein_seq[genPep_row[i]]
+    True_pep[i] = fasta_table$sequence[genPep_row[i]]
   }else if(!is.na(gtf_row[i]) == T){
     True_pep[i] = tx_proteins$protein_sequence[gtf_row[i]]
   }else{
@@ -773,7 +786,71 @@ stopifnot(nrow(peptable) == length(peptable$upstream_jxnAA))
 
 
 ```
+#downstream exon seq --> issue does not carry over rf from upstream exon and cryex...
+```{r}
+downstream_jxnAA <- character(n_rows)
 
+# idx <- 1
+for (rown in seq_len(n_cry)) {
+  
+  # jx <- as.integer(strsplit(cryEx_table$flanking_jxns[rown], ":")[[1]])
+  strand <- cryEx_table$strand[rown]
+  start_chk = cryEx_table$start_dwn[rown]
+  
+  # if (strand == "+") {
+  #   start_pos <- cryEx_table$start_up[rown]  #jx[1] - flanklen + 1
+  #   end_pos   <- cryEx_table$end_up[rown]  #jx
+  # } else {
+  #   start_pos <- cryEx_table$start_up[rown]  #jx[2]
+  #   end_pos   <- cryEx_table$end_up[rown] #jx[2] + flanklen - 1 + 1
+  # }
+  
+  if(!is.na(start_chk) == T){
+    start_pos <- cryEx_table$start_dwn[rown]
+    end_pos   <- cryEx_table$end_dwn[rown]
+  
+  
+  interval <- GRanges(
+    seqnames = cryEx_table$chrom[rown],
+    ranges   = IRanges(start = start_pos, end = end_pos),
+    strand   = strand
+  )
+  
+  dna <- if (strand == "+") {
+    paste(getSeq(genome, interval), collapse = "")
+  } else {
+    paste(rev(getSeq(genome, interval)), collapse = "")
+  }
+  
+  rf <- c(
+    strsplit(as.character(translate(DNAString(dna))), "\\*")[[1]][1],
+    strsplit(as.character(translate(DNAString(substr(dna,2,nchar(dna))))), "\\*")[[1]][1],
+    strsplit(as.character(translate(DNAString(substr(dna,3,nchar(dna))))), "\\*")[[1]][1]
+  )
+  }else{
+    rf <- c(
+      "NA",
+      "NA",
+      "NA"
+    )
+  }
+  # RF_check[idx:(idx+2)] <- rf
+  # idx <- idx + 3
+  
+  downstream_jxnAA[(3*(rown-1) + 1):(3*rown)] <- rf
+}
+
+# upstream_jxnAA_fixed = c()
+# for(i in 1:length(upstream_jxnAA)){
+#   if(upstream_jxnAA[i] >= 3){
+#     upstream_jxnAA_fixed[i] = substr(upstream_jxnAA[i], 2, nchar(upstream_jxnAA[i]))
+#   }else{
+#     upstream_jxnAA_fixed[i] = upstream_jxnAA[i]
+#   }
+# }
+
+peptable$downstream_jxnAA <- downstream_jxnAA
+```
 
 #7aa in upstream flankEx check
 ```{r}
@@ -858,7 +935,29 @@ peptable$Length  <- nchar(peptable$Peptide)
 stopifnot(nrow(peptable) == length(peptable$Peptide))
 
 ```
+#CryEx and dwnstream jxn columns
+```{r}
+#does not work on RFs that have no readthrough upstream jxn
+# peptable = peptable %>%
+#   mutate(Cry_exon = sub(upstream_jxnAA, "", Peptide))
 
+Cry_exon = c()
+for(i in seq_len(nrow(peptable))){
+  upstream_jxnSeq = peptable$upstream_jxnAA[i]
+  full_pepSeq = peptable$Peptide[i]
+  if (is.na(upstream_jxnSeq) || is.na(full_pepSeq)) {
+    Cry_exon[i] = NA_character_
+  } else if (upstream_jxnSeq == full_pepSeq) {
+    Cry_exon[i] = NA_character_
+    }else{
+    Cry_exon[i] = sub(upstream_jxnSeq, "", full_pepSeq)
+  }
+}
+peptable$Cry_exon = Cry_exon
+
+
+
+```
 
 #translate downstream exon to check for readthrough
 ```{r}
@@ -916,7 +1015,7 @@ final_table = data.table(
   
   
   TRUE_reading_frames = sum(peptable$True_RF == "TRUE", na.rm = T),
-  False_reading_frames = sum()
+  False_reading_frames = sum(),
   Total = nrow(cryEx_table)
 )
 ```
@@ -1019,8 +1118,17 @@ saveWorkbook(wb, file = pep_name, overwrite = TRUE)
 ```{r}
 UniquePep = distinct(pep_filterd, Peptide, .keep_all = T)
 
-UniquePep = substr(UniquePep$Peptide, 8, nchar(UniquePep$Peptide) - 7)
+# UniquePep = UniquePep %>% mutate(gene_symbol = sub(".*gene_name ([^;]+);.*", "\\1", Cryex_key)) 
 
+UniquePep = UniquePep %>%
+  mutate(FASTA_fixed = paste0(substr(upstream_jxnAA, nchar(upstream_jxnAA) - 7, nchar(upstream_jxnAA)), Cry_exon))
+
+#need to add gene_symbol at this step or do so at earlier steps--> gene_symbols got replaced by OTTH ids for some reason in new CryEx code
+#261007 --> need to update to get final 7 aa of the upstream exon (flexible!!!)
+UniquePep_list = data.frame( 
+  name = UniquePep$gene_symbol,
+  Peptide =  UniquePep$FASTA_fixed #substr(UniquePep$Peptide, 8, nchar(UniquePep$Peptide) - 7) --> updated 261008
+  )
 n_unique = nrow(UniquePep)
 
 # for(rown in seq_len(n_unique)) {
@@ -1035,10 +1143,10 @@ if(file.exists(pep_FASTA)) {
 
 fileConn = file(pep_FASTA, "a")
 
-for(i in 1:dim(UniquePep)[1]){
-  header = paste(">", UniquePep$name[i], sep = "")
+for(i in 1:nrow(UniquePep_list)){
+  header = paste(">", UniquePep_list$name[i], sep = "")
   writeLines(header, fileConn)
-  writeLines(UniquePep[i,]$Peptide, fileConn)
+  writeLines(UniquePep_list[i,]$Peptide, fileConn)
 }
 
 close(fileConn)
