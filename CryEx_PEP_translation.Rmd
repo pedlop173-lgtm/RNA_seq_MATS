@@ -1052,6 +1052,9 @@ saveWorkbook(wb, file = pep_name, overwrite = TRUE)
 # })
 pep_filterd <- peptable %>% dplyr::filter(peptable$True_RF == "TRUE")
 
+pep_filterd = pep_filterd %>% 
+  mutate(gene_symbol = sub(".*gene_name ([^;]+);.*", "\\1", Cryex_key))
+
 # filtered_cryLeng.list <- as.list(pep_filterd$cry_lengthDiv3)
 # filtered_Length.list <- as.list(pep_filterd$Length)
 # filtered_Novel.list <- as.list(pep_filterd$Novel_true)
@@ -1110,7 +1113,7 @@ saveWorkbook(wb, file = pep_name, overwrite = TRUE)
 ```{r}
 UniquePep = distinct(pep_filterd, Peptide, .keep_all = T)
 
-UniquePep = UniquePep %>% mutate(gene_symbol = sub(".*gene_name ([^;]+);.*", "\\1", Cryex_key)) 
+# UniquePep = UniquePep %>% mutate(gene_symbol = sub(".*gene_name ([^;]+);.*", "\\1", Cryex_key)) 
 
 UniquePep = UniquePep %>%
   mutate(FASTA_fixed = paste0(substr(upstream_jxnAA, nchar(upstream_jxnAA) - 7, nchar(upstream_jxnAA)), Cry_exon))
