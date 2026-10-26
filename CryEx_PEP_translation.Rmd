@@ -9,7 +9,7 @@ output: html_document
 packages_list = c("Rcpp", "installr","tidyverse", "purrr", "magrittr", "ggplot2","readxl", "Hmisc", "gplots", "dplyr",
                   "stringr", "data.table", "gtsummary", "tidyr", "writexl", "openxlsx", "BiocManager")
 
-BioC_pckgs_list = c("BSgenome.Hsapiens.UCSC.hg38", "ensembldb", "EnsDb.Hsapiens.v110", "AnnotationHub", "GenomicFeatures", "GenomicRanges", "rtracklayer", "txdbmaker")
+BioC_pckgs_list = c("BSgenome.Hsapiens.UCSC.hg38", "ensembldb", "AnnotationHub", "GenomicFeatures", "GenomicRanges", "rtracklayer", "txdbmaker")
 
 ######
 #Check if all required packages are installed
@@ -23,6 +23,8 @@ sapply(packages_list, function(x){
   }
 })
 
+sapply(packages_list, library, character.only = T)
+
 sapply(BioC_pckgs_list, function(x){
   if(x %in% rownames(installed.packages()) == F){
     BiocManager::install(x)
@@ -31,30 +33,7 @@ sapply(BioC_pckgs_list, function(x){
   }
 })
 
-
-# install.packages("Rcpp", type = "binary")
-# install.packages("installr")
-# install.packages("tidyverse", type = "binary")
-# install.packages("purrr")
-# install.packages("magrittr")
-# install.packages("ggplot2")
-# install.packages("readxl")
-# install.packages("Hmisc")
-# install.packages("gplots")
-# install.packages("dplyr")
-# install.packages("stringr")
-# install.packages("data.table")
-# install.packages("gtsummary")
-# install.packages("tidyr")
-# install.packages("writexl")
-# install.packages("openxlsx", type = "binary")
-# install.packages("BiocManager")
-# BiocManager::install("BSgenome.Hsapiens.UCSC.hg38")
-# BiocManager::install("ensembldb")
-# BiocManager::install("EnsDb.Hsapiens.v110")
-# BiocManager::install("AnnotationHub")
-
-
+sapply(BioC_pckgs_list, library, character.only = T)
 
 
 library(Rcpp)
@@ -189,7 +168,7 @@ cryEx_table = cryEx_table %>%
 ```
 
 
-#AnnotationHub annotation method
+#AnnotationHub annotation method--OUTDATED
 ```{r}
 # library(BSgenome.Hsapiens.UCSC.hg38)
 # ah = AnnotationHub()
@@ -240,12 +219,23 @@ cryEx_table = cryEx_table %>%
 
 
 
-#Experimental--CDS exons and gtf-mediated annotation
+#CDS exons and gtf-mediated annotation
 ```{r}
 # ah <- AnnotationHub()
 # 
 # library(BSgenome.Hsapiens.UCSC.hg38)
-genome <- BSgenome.Hsapiens.UCSC.hg38
+genome <- BSgenome.Hsapiens.UCSC.hg38 #replace with primary assembly genome FASTA from gencode??
+
+# genome_dir = rstudioapi::selectFile(caption = "select relevant gencode genome", path = "/media/bree/")
+# genome_1 = readDNAStringSet(genome_dir, format = "fasta") 
+# 
+# header_genome <- strsplit(names(genome_1), "\\|")
+# 
+# genome_table = data.frame(
+#   chr = as.character(), #sapply(header_genome, `[`, 1),
+#   DNAseq = 
+# )
+
 # edb <-ah[["AH119325"]]
 # 
 # tx <- transcripts(edb, columns = c("gene_id", "tx_id", "tx_support_level", "tx_is_canonical", "gene_name" ,"protein_sequence","gene_biotype", "description", "tx_biotype"))
@@ -959,7 +949,7 @@ peptable$Cry_exon = Cry_exon
 
 ```
 
-#translate downstream exon to check for readthrough
+#translate downstream exon to check for readthrough -- OUTDATED
 ```{r}
 #check right flanking exon aa sequence for novel readthroughs
 
@@ -1001,23 +991,23 @@ peptable$Cry_exon = Cry_exon
 
 #review table
 ```{r}
-final_table = data.table(
-  True_reading_frames = sum(peptable$True_RF == "TRUE", na.rm = T),
-  no_start_codon = (sum(cryEx_table$cds_startExtreme == "no_start_codon_in_GTF!", na.rm = T)*3),
-  upstream_ofCDS = (sum(cryEx_table$Upstream_ofCDS == "TRUE", na.rm = T)*3),
-  ERROR = (sum(cryEx_table$Upstream_ofCDS == "FALSE", na.rm = T)*3),
-  False_reading_frames = (sum(peptable$True_RF %in% c("FALSE", "no reference aa"), na.rm = T) - (sum(cryEx_table$Upstream_ofCDS == "TRUE", na.rm = T) + sum(cryEx_table$Upstream_ofCDS == "FALSE", na.rm = T) + sum(cryEx_table$cds_startExtreme == "no_start_codon_in_GTF!", na.rm = T))*3),
-  total_events = nrow(peptable)
-)
-
-#Relative to CryEX outputs
-final_table = data.table(
-  
-  
-  TRUE_reading_frames = sum(peptable$True_RF == "TRUE", na.rm = T),
-  False_reading_frames = sum(),
-  Total = nrow(cryEx_table)
-)
+# final_table = data.table(
+#   True_reading_frames = sum(peptable$True_RF == "TRUE", na.rm = T),
+#   no_start_codon = (sum(cryEx_table$cds_startExtreme == "no_start_codon_in_GTF!", na.rm = T)*3),
+#   upstream_ofCDS = (sum(cryEx_table$Upstream_ofCDS == "TRUE", na.rm = T)*3),
+#   ERROR = (sum(cryEx_table$Upstream_ofCDS == "FALSE", na.rm = T)*3),
+#   False_reading_frames = (sum(peptable$True_RF %in% c("FALSE", "no reference aa"), na.rm = T) - (sum(cryEx_table$Upstream_ofCDS == "TRUE", na.rm = T) + sum(cryEx_table$Upstream_ofCDS == "FALSE", na.rm = T) + sum(cryEx_table$cds_startExtreme == "no_start_codon_in_GTF!", na.rm = T))*3),
+#   total_events = nrow(peptable)
+# )
+# 
+# #Relative to CryEX outputs
+# final_table = data.table(
+#   
+#   
+#   TRUE_reading_frames = sum(peptable$True_RF == "TRUE", na.rm = T),
+#   False_reading_frames = sum(),
+#   Total = nrow(cryEx_table)
+# )
 ```
 
 #Create WB
@@ -1026,65 +1016,67 @@ final_table = data.table(
 #Start WB and make unfilt Peptable
 #########
 wb <-createWorkbook()
+addWorksheet(wb, "CryEx")
+writeData(wb, "CryEx", cryEx_table)
 addWorksheet(wb, "peptable" )
 writeData(wb, "peptable", peptable)
 
 pep_name = file.path(outputdir_base, paste(initials, cell_line, perturbation, "peptable.xlsx", sep = "_" ))
 saveWorkbook(wb, file = pep_name, overwrite = TRUE)
 
-#yellow fill == full readthrough cryptic exon
-Yellow <- createStyle(fgFill = "yellow")
-#Blue fill == downstream contitutive exon matches ref aa (TRUE)
-Blue <- createStyle(fgFill = "lightblue")
-
-cryLeng.list <- as.list(peptable$cry_lengthDiv3)
-Length.list <- as.list(peptable$Length)
-Novel.list <- as.list(peptable$Novel_true)
-
-lapply(seq_along(cryLeng.list), function(i){
-  if(cryLeng.list[[i]] == Length.list[[i]] - (flanklen/3*2)){
-    addStyle(wb, sheet = "peptable" ,style = Yellow, rows = i + 1, cols = 1:14 ,gridExpand = TRUE)
-  }
-})
-
-lapply(seq_along(cryLeng.list), function(i){
-  if(cryLeng.list[[i]] == Length.list[[i]] - (flanklen/3*2)-1){
-    addStyle(wb, sheet = "peptable" ,style = Yellow, rows = i + 1, cols = 1:14 ,gridExpand = TRUE)
-  }
-})
-
-lapply(seq_along(Novel.list), function(i){
-  if(Novel.list[[i]] == "TRUE"){
-    addStyle(wb, sheet = "peptable", style = Blue, rows = i + 1, cols = 15, gridExpand = TRUE)
-  }
-})
+# #yellow fill == full readthrough cryptic exon
+# Yellow <- createStyle(fgFill = "yellow")
+# #Blue fill == downstream contitutive exon matches ref aa (TRUE)
+# Blue <- createStyle(fgFill = "lightblue")
+# 
+# cryLeng.list <- as.list(peptable$cry_lengthDiv3)
+# Length.list <- as.list(peptable$Length)
+# Novel.list <- as.list(peptable$Novel_true)
+# 
+# lapply(seq_along(cryLeng.list), function(i){
+#   if(cryLeng.list[[i]] == Length.list[[i]] - (flanklen/3*2)){
+#     addStyle(wb, sheet = "peptable" ,style = Yellow, rows = i + 1, cols = 1:14 ,gridExpand = TRUE)
+#   }
+# })
+# 
+# lapply(seq_along(cryLeng.list), function(i){
+#   if(cryLeng.list[[i]] == Length.list[[i]] - (flanklen/3*2)-1){
+#     addStyle(wb, sheet = "peptable" ,style = Yellow, rows = i + 1, cols = 1:14 ,gridExpand = TRUE)
+#   }
+# })
+# 
+# lapply(seq_along(Novel.list), function(i){
+#   if(Novel.list[[i]] == "TRUE"){
+#     addStyle(wb, sheet = "peptable", style = Blue, rows = i + 1, cols = 15, gridExpand = TRUE)
+#   }
+# })
 pep_filterd <- peptable %>% dplyr::filter(peptable$True_RF == "TRUE")
 
-filtered_cryLeng.list <- as.list(pep_filterd$cry_lengthDiv3)
-filtered_Length.list <- as.list(pep_filterd$Length)
-filtered_Novel.list <- as.list(pep_filterd$Novel_true)
+# filtered_cryLeng.list <- as.list(pep_filterd$cry_lengthDiv3)
+# filtered_Length.list <- as.list(pep_filterd$Length)
+# filtered_Novel.list <- as.list(pep_filterd$Novel_true)
 
 addWorksheet(wb, "peptable_filtered")
 writeData(wb, "peptable_filtered", pep_filterd)
 
-lapply(seq_along(filtered_cryLeng.list), function(i){
-  if(filtered_cryLeng.list[[i]] == filtered_Length.list[[i]] - (flanklen/3*2)){
-    addStyle(wb, sheet = "peptable_filtered" ,style = Yellow, rows = i + 1, cols = 1:14 ,gridExpand = TRUE)
-  }
-})
-
-
-lapply(seq_along(filtered_cryLeng.list), function(i){
-  if(filtered_cryLeng.list[[i]] == filtered_Length.list[[i]] - (flanklen/3*2-1)){
-    addStyle(wb, sheet = "peptable_filtered" ,style = Yellow, rows = i + 1, cols = 1:14 ,gridExpand = TRUE)
-  }
-})
-
-lapply(seq_along(filtered_Novel.list), function(i){
-  if(filtered_Novel.list[[i]] == "TRUE"){
-    addStyle(wb, sheet = "peptable_filtered", style = Blue, rows = i + 1, cols = 15, gridExpand = TRUE)
-  }
-})
+# lapply(seq_along(filtered_cryLeng.list), function(i){
+#   if(filtered_cryLeng.list[[i]] == filtered_Length.list[[i]] - (flanklen/3*2)){
+#     addStyle(wb, sheet = "peptable_filtered" ,style = Yellow, rows = i + 1, cols = 1:14 ,gridExpand = TRUE)
+#   }
+# })
+# 
+# 
+# lapply(seq_along(filtered_cryLeng.list), function(i){
+#   if(filtered_cryLeng.list[[i]] == filtered_Length.list[[i]] - (flanklen/3*2-1)){
+#     addStyle(wb, sheet = "peptable_filtered" ,style = Yellow, rows = i + 1, cols = 1:14 ,gridExpand = TRUE)
+#   }
+# })
+# 
+# lapply(seq_along(filtered_Novel.list), function(i){
+#   if(filtered_Novel.list[[i]] == "TRUE"){
+#     addStyle(wb, sheet = "peptable_filtered", style = Blue, rows = i + 1, cols = 15, gridExpand = TRUE)
+#   }
+# })
 
 
 
@@ -1118,7 +1110,7 @@ saveWorkbook(wb, file = pep_name, overwrite = TRUE)
 ```{r}
 UniquePep = distinct(pep_filterd, Peptide, .keep_all = T)
 
-# UniquePep = UniquePep %>% mutate(gene_symbol = sub(".*gene_name ([^;]+);.*", "\\1", Cryex_key)) 
+UniquePep = UniquePep %>% mutate(gene_symbol = sub(".*gene_name ([^;]+);.*", "\\1", Cryex_key)) 
 
 UniquePep = UniquePep %>%
   mutate(FASTA_fixed = paste0(substr(upstream_jxnAA, nchar(upstream_jxnAA) - 7, nchar(upstream_jxnAA)), Cry_exon))
